@@ -18,6 +18,12 @@ coding agents depend on it.
 - Earlier DeepSeek tests on this host caused two host OOMs that killed production services. Run every build and test
   under `systemd-run --user --scope -p MemoryMax=... -p MemorySwapMax=0 nice -n 19 ionice -c3`, with `ninja -j4`.
 - No changes to networking, Docker, Hermes, FrontierUI, MARROW or firewall.
+- **Host stability (2026-11-09 incident, STATUS.md):** the B60 sits behind the chipset with both NICs; sustained
+  streaming to it made the NIC time out and the host lose its network. Do not use the B60 for XeMaya unless the owner
+  says so (`--layer-split auto` now leaves it out). Run every GPU job under `tools/xemaya/safety_guard.sh`. Never
+  SIGKILL an engine in the middle of GPU work (QUIT, Ctrl-C, SIGTERM and wait). Check `journalctl -k` for
+  `NETDEV WATCHDOG` and `xe ... Engine reset` after any GPU run, and stop at the first one. Think through PCIe, disk,
+  memory and network load before a long run, and keep long-context runs short and few.
 - Nothing is published or pushed to anyone else's repository. Pushing to the private `Jumbomuffin777/XeMaya` is allowed.
 
 ## Where things are

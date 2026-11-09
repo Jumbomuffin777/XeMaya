@@ -1,6 +1,6 @@
 # XeMaya status
 
-Updated 2026-11-09 17:30 UTC (after GPU window 2; GLM attention, agent-turn and window-3 work since, CPU only). Branch `xemaya/main` = `origin/main` of the private
+Updated 2026-11-09 19:00 UTC (after GPU window 3, which ended with Zability losing its network; see the incident). Branch `xemaya/main` = `origin/main` of the private
 https://github.com/Jumbomuffin777/XeMaya. Every item below was run on Zability unless marked otherwise.
 
 ## Works (checked)
@@ -121,6 +121,85 @@ NVMe during the prompt.
 5. Untested: contexts beyond 2.4K, the OpenAI/Anthropic serve path, tool calls, streaming, long soaks, concurrent
    requests, and other prompts. Correctness rests on one 16-token comparison plus the kernel tests.
 
+## Incident, 2026-11-09 18:29-18:46 UTC: Zability lost its network during window 3 (read this first)
+
+- **What happened:** the onboard RTL8126 5 GbE NIC (`eno1`, r8169 driver) logged `NETDEV WATCHDOG: transmit queue 0
+  timed out` at 17:49:58 and 18:29:25, Tailscale then lost every path, and the host stayed unreachable until it was
+  rebooted (clean shutdown 18:45:12). No kernel panic, no OOM, no GPU fault at the end.
+- **Cause (most likely, from evidence):** those are the only two NIC timeouts in five boots (4 days), and they fall in
+  XeMaya's two heaviest runs: the 64K prompt (17:44-17:50) and the 128K prompt (18:20-18:31). The B60 (0e:00.0) is the
+  only GPU behind the chipset, and the chipset's one uplink also carries both 5 GbE NICs, Wi-Fi, SATA and USB (the B70,
+  B65 and the model's NVMe are on CPU lanes). Those prompts streamed the experts the B60's VRAM missed, ~6 GB a 4K-token
+  chunk at its ~7 GB/s link, for minutes on end. Production Qwen never uses the B60.
+- **Also seen:** two GPU engine resets with page faults on the B70 (17:24:10, 17:38:27), exactly when XeMaya engines
+  were killed with SIGKILL in the middle of GPU work. They did not take anything down.
+- **Recovery:** after the reboot, no XeMaya process or lease was left; `xemaya-window-end.sh` restored the router and
+  Qwen (healthy after 60 s) at 18:48.
+- **Changes so it does not happen again:**
+  1. `--layer-split auto` leaves a GPU on a slow host link (under half the first GPU's) out of the split unless it is
+     named (`--split-device`) or `XEMAYA_SLOW_LINK_GPUS=1`: on Zability XeMaya runs on the B70 + B65 by default (window 2:
+     same prefill, decode 12.5 vs 13.9 tok/s).
+  2. `tools/xemaya/safety_guard.sh` wraps every GPU job in the window scripts: it stops the job at a NIC watchdog, a GPU
+     engine reset or fault, an OOM kill, a hung task, an NVMe timeout, a PCIe AER error, three missed gateway pings or
+     MemAvailable under 12 GiB. Tested on the host (normal exit, and a forced trip).
+  3. Engines are stopped with QUIT / Ctrl-C / SIGTERM and given time to exit; no SIGKILL in the tools.
+  4. No 128K run, nor any long run that streams to the B60, without the owner's explicit say.
+- **Owner's decision, not done (networking is off limits to XeMaya):** the r8169 driver with the RTL8126 has known
+  transmit-timeout problems under load. Options: Realtek's own r8126 driver, PCIe ASPM off for the NIC, newer firmware,
+  or moving the GPU that sits behind the chipset.
+
+## GPU window 3: GLM attention, TTFT, long context, agent use (2026-11-09 17:00-18:3x UTC)
+
+Owner-approved; production stopped and the agents parked by the owner. B70 + B65 + B60, `--layer-split auto`, Maya-S v2
+IQ2_XXS. Logs: `/DATA/Projects/xemaya/logs/window3/`. The XMX attention was written, tested and adopted in the window.
+
+**Correctness.** Kernel parity on each card (glm5 incl. tiled, ds41, iq): PASS. `glm5_mla_attn_xmx` against a
+double-precision reference on the B70 and the B60: worst 1.3e-7. Forced along the llama.cpp v0.8.0 CPU references:
+
+| Prompt | Top-1 equal | Median \|d logprob\| | Mean top-5 KL | Same with the original attention |
+|---|---|---|---|---|
+| chat-agent (128 steps) | 126 | 0.009 | 0.007 | - |
+| ctx-2377 (64) | 56 | 0.067 | 0.020 | 53, 0.072 |
+| code-512 (64) | 55 | 0.094 | 0.047 | 53, 0.114, KL 0.065 |
+
+The XMX path is as close to llama.cpp as the original or closer; the differences are on both sides (mean signed -0.04
+to -0.13) and look like the two 2-bit implementations' rounding, not a bug. The "no miss outside near-ties" rule is too
+strict for this; a llama.cpp GPU reference would calibrate the expected spread. Prompt-end checkpoint: resumes at the
+right token (198 of 774) with and without drafts; the resumed and from-scratch replies agree for 21 (15 with drafts)
+tokens, then part at a different chunking's rounding.
+
+**Speed** (prompt read and decode by the engine; TTFT = the prompt's time):
+
+| Prompt | Attention | Prefill tok/s | TTFT | Decode tok/s |
+|---|---|---|---|---|
+| 2,377 | original | 94.8 | 25.1 s | 13.97 |
+| 2,377 | tiled | 105.5 | 22.5 s | 16.00 |
+| 2,377 | **xmx** | **152.1-161.3** | **14.8-15.6 s** | **17.36** (20.03 with MTP drafts) |
+| 8K | original / tiled / **xmx** | 92.2 / 102.5 / **204.2** | 88.9 / 80.0 / **40.2 s** | 14.77 / 17.17 / **18.62** |
+| 32K | xmx | 213.1 (`--kv-ram off` 217.5) | 154 s | 13.94 (17.22; 24.31 with drafts) |
+| 64K | xmx | 205.9 | 318 s | 14.45 |
+| 128K | xmx, drafts | 206.9 | 634 s | 21.0 |
+
+Baselines (2,377 tokens + 128): stock llama.cpp SYCL 68.3 / 13.6, grouped 108.9 / 14.0: XeMaya's prefill is now 2.2x
+stock and 1.4x the grouped build, decode 1.24x (1.43x with drafts). Attention benchmark (B70, 4,096 tokens over 8K
+cells): 12.9 s original, 4.2 s tiled, 0.236 s xmx (14 TFLOP/s). The first request after a load pays ~9 s of one-time
+setup (198-token prompt in 11.3 s cold, 2.9 s warm).
+
+**Agent session through serve/server.py** (OpenAI streaming, `read_file` tool, 7 turns, context to 22K): every turn a
+valid tool call (`finish_reason` tool_calls), reasoning apart from the content, the stream well formed; each turn reused
+the whole conversation (cached 4,057 ... 18,906 tokens) and read only the new tool result (~3.7K tokens) at ~180 tok/s,
+~20 s a turn; decode 19-33 tok/s; a cancelled stream's next request done in 3.2 s; the Anthropic route returns tool_use.
+Gap found: the same prompt sent again (a retry) is read from scratch (107 s at 22K): the checkpoint is taken after the
+prompt's last token, which a recurrent model cannot read again.
+
+**Rejected after measuring:** `STRATA_RESIDENT_PIN=1` (the pinned RAM copy: the first prompt's experts took 71.6 s,
+later ones no faster) and copying a group's missed experts into the staging on 8 threads (no gain; reverted).
+
+**Where the prompt's time goes now** (2,377 tokens, the three stages summed): routed experts ~6.3 s (about half),
+KDA ~2.7 s, DSA ~2.5 s (at 64K the indexer is DSA's largest part). The stages run one after another (GPU activity
+16-41% each during prompts), so overlapping chunks across GPUs is the next large prefill lever; the expert stage needs a
+finer GPU-side profile first.
+
 ## Since window 2 (CPU only, not yet run on an Arc GPU)
 
 | Change | State |
@@ -156,19 +235,10 @@ NVMe during the prompt.
 
 ## Needs the owner's approval (not done)
 
-1. **GPU window 3** (production Qwen stopped and the agents parked by the owner, as before; about 75-90 minutes):
-   `tools/xemaya/window3.sh` under `gpulease.py run --holder xemaya-dev --memory-budget-gib 60`. Phases:
-   1. kernel parity on each card (with the tiled attention) and the attention benchmark at 2K-64K cells (B70, B60)
-   2. / 3. one model load each, original vs tiled attention, prompt profile on: 2,377- and 8K-token prompts
-   4. the faster attention: correctness against the three new references, uncached prefill / TTFT / decode at 64K,
-      32K and 8K, the prompt-end checkpoint test; 4b. 32K with `--kv-ram off`
-   5. MTP drafts on: 2,377 and 32K, the checkpoint with drafts
-   6. the HTTP server with GLM: a 6-file coding-agent session (TTFT, cached tokens per turn, tool calls, streaming,
-      reasoning, cancellation, Anthropic route), then 3 turns with the checkpoint off for comparison
-   7. (only if time is left) a 128K prompt
-   Ends as before: everything unloaded, lease free, cards idle, then `xemaya-window-end.sh`.
-2. For kernel-only tests without stopping production, an `OWNERS` entry `'xemaya-dev': B60` would do. Rollback:
-   remove the entry.
+1. Another GPU window only after you have seen the incident above. Proposed scope: B70 + B65 only (the B60 left out),
+   every job under `safety_guard.sh`, no 128K run; tests: the agent session with the fixed TTFT measurement, a retry
+   (same prompt) after the n-1 checkpoint fix, and a finer expert-stage profile.
+2. The NIC (r8169 / RTL8126 transmit timeouts): your call (see the incident).
 
 ## Notes
 

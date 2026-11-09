@@ -57,7 +57,7 @@ B60 24 GB, Intel oneAPI `icpx` 2026.2).
 | Element-wise kernels | `elementwise_parity`: 0 failures on each Arc card |
 | Server | 14 newer Strata tool-call fixes ported; serve tests 930 passed, 0 failed |
 
-Measured on 2026-11-09 (GPU window 2); the configurations, telemetry and bottlenecks are in xemaya/STATUS.md. Since then, built and checked on the CPU, not yet on the cards: a tiled DSA attention kernel (46% of the prompt's time went to DSA) and a prompt-end checkpoint so an agent's next turn does not read the whole conversation again. Detailed notes: [xemaya/STATUS.md](xemaya/STATUS.md).
+GPU window 3 (2026-11-09): with the attention on Intel's XMX matrix engines, a 2,377-token prompt reads at 152 tok/s (TTFT 15.6 s; stock llama.cpp SYCL 68.3, grouped 108.9) and decodes at 17.4 tok/s (20.0 with MTP drafts); prefill holds ~205 tok/s from 8K to 128K; a coding-agent session through the OpenAI API made valid tool calls and reused the conversation every turn. Not production-ready. The window ended with the host losing its network under XeMaya's heaviest load; the cause and the safeguards are in xemaya/STATUS.md. Detailed notes: [xemaya/STATUS.md](xemaya/STATUS.md).
 
 ## Roadmap
 
@@ -78,7 +78,7 @@ Earlier runs of the same models on the same machine through llama.cpp's SYCL bac
 | DeepSeek-V4.1 Maya-XS (with a custom loader patch) | 45.6 tok/s | 10.9 tok/s |
 | GLM-5.3 Maya-S v2 (stock llama.cpp) | 68.3 tok/s | 13.6 tok/s |
 | GLM-5.3 Maya-S v2 (experimental grouped SYCL matmul) | 108.9 tok/s | 14.0 tok/s |
-| *XeMaya, GLM-5.3 Maya-S v2, 3 GPUs, same prompt length (2026-11-09)* | *93-100 tok/s* | *13.9 tok/s; 16.0 with MTP drafts* |
+| *XeMaya, GLM-5.3 Maya-S v2, 3 GPUs, same prompt length (window 3, XMX attention)* | *152 tok/s* | *17.4 tok/s; 20.0 with MTP drafts* |
 
 These are reference points, not like-for-like targets.
 
