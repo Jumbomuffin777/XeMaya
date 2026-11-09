@@ -39,7 +39,7 @@ serve() {   # NAME MLA SPEC CONTEXT PLAN_JSON [env...]
 }
 say "start (phase $FIRST)"
 bash /DATA/AppData/strata-void-l3/preflight.sh 40 28 28 20 || stop "preflight"
-nohup $X/monitor3.sh > /dev/null 2>&1 &
+setsid nohup $X/monitor3.sh > /dev/null 2>&1 < /dev/null &
 
 if [ $FIRST -le 1 ]; then
   say "1. kernel parity, one card each, in parallel"
@@ -49,8 +49,9 @@ if [ $FIRST -le 1 ]; then
         ONEAPI_DEVICE_SELECTOR=level_zero:$d cap 12G timeout 300 stdbuf -oL $X/build-icpx/$t > $W/$n-l0-$d.log 2>&1
         echo "$n level_zero:$d rc=$? last: $(tail -1 $W/$n-l0-$d.log)"
       done ) &
+    pids="${pids:-} $!"
   done
-  wait
+  wait $pids   # (not a bare wait: the telemetry recorder is a child too)
   grep -L -E "^PASS|iq_parity: 0 failures" $W/*_parity-l0-*.log | grep -q . && stop "a kernel test failed"
   say "1b. the attention benchmark (B70, then B60)"
   for d in 0 2; do for p in 2377 8192 32768 65536; do
@@ -62,7 +63,8 @@ J_AB=$(plan '[{"kind":"gen","name":"ctx-2377","prompt":"'$P'/ctx-2377.ids","max_
 if [ $FIRST -le 2 ]; then say "2. original attention (A)"; serve A-ref ref 0 16384 "$J_AB" STRATA_PROMPT_PROFILE=1 || stop "phase 2"; fi
 if [ $FIRST -le 3 ]; then say "3. tiled attention (B)"; serve B-tiled tiled 0 16384 "$J_AB" STRATA_PROMPT_PROFILE=1 || stop "phase 3"; fi
 # the faster of the two by the 2,377- and 8K-token prompts' read times (DONE's prompt_ms)
-MLA=$(python3 - "$W" <<'EOF'
+MLA=${MLA_FORCE:-}
+[ -n "$MLA" ] || MLA=$(python3 - "$W" <<'EOF'
 import json, sys
 d = sys.argv[1]
 def t(n):
