@@ -36,6 +36,12 @@ option(STRATA_PORTABLE "ggml-cpu for any AVX2 CPU; OFF: -march=native" ON)
 # Intel oneAPI's icpx is not taken (the contrib-icpx mode was removed on 2026-10-15): intel/llvm reaches every maker's
 # GPUs.
 set(STRATA_LICENSE contrib CACHE STRING "build mode: free or contrib")
+option(XEMAYA_ALLOW_ICPX "XeMaya: accept Intel oneAPI's icpx as the SYCL compiler (Intel GPUs only)" ON)
+# icpx defaults to -fp-model=fast; precise keeps the host references, the CPU experts and the device kernels on the
+# same IEEE arithmetic as intel/llvm and g++ (as XeStrata's contrib-icpx mode did before c75beb882).
+if(CMAKE_CXX_COMPILER_ID STREQUAL "IntelLLVM")
+  add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-ffp-model=precise>)
+endif()
 set_property(CACHE STRATA_LICENSE PROPERTY STRINGS free contrib)
 if(STRATA_LICENSE STREQUAL "contrib-icpx")
   message(FATAL_ERROR "STRATA_LICENSE=contrib-icpx: the contrib-icpx mode (Intel oneAPI's icpx) was removed; use "
@@ -248,11 +254,19 @@ add_test(NAME ple_reader_selftest COMMAND ple_reader_test --selftest)
 # ---- Intel Xe foundation --------------------------------------------------
 if(STRATA_ENABLE_XE)
   include(CheckCXXSourceCompiles)
-  if(CMAKE_CXX_COMPILER_ID STREQUAL "IntelLLVM")
-    message(FATAL_ERROR "Intel oneAPI's icpx is not taken (the contrib-icpx mode was removed): configure with "
-                        "intel/llvm's DPC++ 7 or later (tools/intel_llvm_build.py; "
-                        "-DCMAKE_CXX_COMPILER=.tools/intel-llvm/install/bin/clang++, --contrib for NVIDIA GPUs)")
-  else()
+  # XeMaya: Intel oneAPI's icpx is accepted again (XEMAYA_ALLOW_ICPX, default ON), for Intel GPUs only.  XeStrata
+  # removed it on 2026-10-15 (c75beb882) to keep one toolchain for every maker; XeMaya is Intel-first and the hosts it
+  # targets already carry oneAPI (2026.2: libsycl 9, the same runtime major as intel/llvm 7), so building intel/llvm
+  # is not required.  The SYCL 9 checks below apply to it as to intel/llvm.
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "IntelLLVM" AND NOT XEMAYA_ALLOW_ICPX)
+    message(FATAL_ERROR "icpx: configure with -DXEMAYA_ALLOW_ICPX=ON, or with intel/llvm's DPC++ 7 or later "
+                        "(-DCMAKE_CXX_COMPILER=.tools/intel-llvm/install/bin/clang++)")
+  endif()
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "IntelLLVM" AND (_strata_cuda_archs OR _strata_hip_archs))
+    message(FATAL_ERROR "icpx has no NVIDIA or AMD target: -DSTRATA_CUDA_ARCHS= -DSTRATA_HIP_ARCHS= "
+                        "(or intel/llvm for other makers' GPUs)")
+  endif()
+  if(TRUE)
     # intel/llvm 7 or later, whose SYCL runtime is libsycl 9 (Ubuntu 26.04's dpclang++ 6.2 has libsycl 8 and gives the
     # Arc Pro B70 no XMX): one compiler line for every build with intel/llvm
     set(CMAKE_REQUIRED_FLAGS -fsycl)

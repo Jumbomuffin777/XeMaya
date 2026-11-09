@@ -122,8 +122,19 @@ std::string no_gpu_listed() {
 std::vector<sycl::device> find_devices() {
     std::vector<sycl::device> candidates;
     std::string refused;
-    for (const auto& d : sycl::device::get_devices(sycl::info::device_type::gpu)) {
-        if (!engine_backend(d)) continue;
+    // XeMaya: XEMAYA_CPU_DEVICE=1 also takes the OpenCL CPU device (development only: the kernels' parity tests run
+    // on a host whose GPUs are leased to another workload, with ONEAPI_DEVICE_SELECTOR=opencl:cpu so that no GPU is
+    // opened).  It is slow and has no matrix engines; never for serving.
+    const char* cpu_env = std::getenv("XEMAYA_CPU_DEVICE");
+    const bool cpu_ok = cpu_env != nullptr && std::strcmp(cpu_env, "1") == 0;
+    std::vector<sycl::device> listed = sycl::device::get_devices(sycl::info::device_type::gpu);
+    if (cpu_ok) {
+        for (const auto& d : sycl::device::get_devices(sycl::info::device_type::cpu)) listed.push_back(d);
+        std::fprintf(stderr, "XEMAYA_CPU_DEVICE=1: the OpenCL CPU device is accepted (development parity only)\n");
+    }
+    for (const auto& d : listed) {
+        const bool cpu_dev = cpu_ok && d.is_cpu() && d.get_backend() == sycl::backend::opencl;
+        if (!engine_backend(d) && !cpu_dev) continue;
         if (const std::string why = unusable(d); !why.empty()) {
             refused += "; " + d.get_info<sycl::info::device::name>() + " (" + pci_of(d) + "): " + why;
             continue;
