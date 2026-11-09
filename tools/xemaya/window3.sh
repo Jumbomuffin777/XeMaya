@@ -11,6 +11,7 @@
 #   3 engine, tiled attention, the same                                                         (the B)
 #   4 engine, the faster attention, spec 0: correctness (chat-agent, code-512, ctx-2377 against llama.cpp), uncached
 #     prefill and decode at 64K, 32K, 8K; the prompt-end checkpoint
+#   4c forced along each llama.cpp reference (chat-agent, code-512, ctx-2377), logits compared
 #   4b the same at 32K with the DSA cells in VRAM (--kv-ram off)
 #   5 engine, the faster attention, spec 3 (MTP drafts): ctx-2377, ctx-32k, the checkpoint with drafts
 #   6 the HTTP server (OpenAI / Anthropic routes): a coding agent's session, the checkpoint on; then off for 3 turns
@@ -91,6 +92,19 @@ if [ $FIRST -le 4 ]; then   # 4b: the DSA cells in VRAM (--kv-ram off): decode a
     cap 70G timeout 3600 python3 $R/tools/xemaya/engine_serve.py --exe $E --model $M --out $W/C2-kvvram.json \
       --engine-arg=--layer-split --engine-arg=auto --engine-arg=--max-context --engine-arg=36864 --engine-arg=--spec \
       --engine-arg=0 --engine-arg=--kv-ram --engine-arg=off $W/plan-C2-kvvram.json ) 2>&1 | tee $W/C2-kvvram.txt
+fi
+if [ $FIRST -le 4 ]; then   # 4c: forced along each reference (its near-ties cannot hide a divergence), logits compared
+  for r in ctx-2377 code-512 chat-agent; do
+    say "4c. forced along the llama.cpp reference: $r"
+    python3 -c "import json,sys; print(','.join(map(str, json.load(open(sys.argv[1]))['tokens'])))" \
+        $REF/glm53-maya-s-v2-$r.json > $W/forced-$r.ref.ids
+    n=$(tr ',' '\n' < $W/forced-$r.ref.ids | grep -c .)
+    ( export XEMAYA_MLA_ATTN=$MLA
+      cap 70G timeout 1800 $E --native $M --tokens-file $P/$r.ids --greedy --layer-split auto --max-context 8192 \
+          --max-new $n --spec 0 --spec-follow $W/forced-$r.ref.ids --dump-logits $W/forced-$r.f32 \
+          > $W/forced-$r.out 2> $W/forced-$r.err )
+    python3 $R/tools/xemaya/compare_ref.py $REF/glm53-maya-s-v2-$r.json --forced $W/forced-$r.f32 | tee $W/forced-$r.txt | tail -2
+  done
 fi
 if [ $FIRST -le 5 ]; then
   say "5. MTP drafts (spec 3, $MLA)"
