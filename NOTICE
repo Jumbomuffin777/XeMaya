@@ -1,3 +1,13 @@
+XeMaya
+Copyright (C) 2026 Jumbomuffin777 and the XeMaya contributors
+
+XeMaya is a fork of XeStrata (https://github.com/MistVVK/XeStrata), itself a port of Strata
+(https://github.com/Niko1221/Strata). It targets the models and GGUF quantisations of Project Maya
+(https://github.com/mw00/project-maya, MIT). XeMaya is distributed under the same terms as XeStrata, below;
+where the text below says "XeStrata", the same terms and additional permission apply to XeMaya.
+
+----------------------------------------------------------------------------------------------------
+
 XeStrata
 Copyright (C) 2026 MistVVK and the XeStrata contributors
 
@@ -30,6 +40,10 @@ Copyright notices
 
 Every copyright holder whose work is in this repository, its license and where the license text is:
 
+- Copyright (C) 2026 Jumbomuffin777 and the XeMaya contributors
+  LGPL-3.0-or-later - XeMaya's own changes and XeMaya as a combined work - COPYING.LESSER, COPYING
+- Copyright (c) 2026 mw00 and the Project Maya contributors
+  MIT - Project Maya: model support, quantisation formats and reference designs XeMaya follows - LICENSES/MIT.txt
 - Copyright (C) 2026 MistVVK and the XeStrata contributors
   LGPL-3.0-or-later - XeStrata's own code, and XeStrata as a combined work (its parts keep the licenses listed
   here) - COPYING.LESSER, COPYING

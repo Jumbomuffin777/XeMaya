@@ -3,9 +3,6 @@ SPDX-FileCopyrightText: 2026 MistVVK and the XeStrata contributors
 SPDX-License-Identifier: LGPL-3.0-or-later
 -->
 # Recovery and diagnosis instructions for an LLM agent
-
-English | [日本語](DIAGNOSE.ja.md)
-
 Give this document to an LLM agent that can use your terminal, along with what you tried to do and what failed.
 It covers source installations such as git clones and deb/rpm installations through apt/dnf and similar tools.
 The following instructions are for the agent.

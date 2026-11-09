@@ -3,9 +3,6 @@ SPDX-FileCopyrightText: 2026 MistVVK and the XeStrata contributors
 SPDX-License-Identifier: LGPL-3.0-or-later
 -->
 # XeStrata on Intel GPUs
-
-English | [日本語](XE.ja.md)
-
 This document records how XeStrata's engine runs on Intel GPUs and how that was checked: what the engine requires of the GPU, and the ported arithmetic and its validation.
 How to use it is in the [README](../README.md) and the [details](DETAILS.md); how to build it, what setup does and the packages it needs, in [BUILD](BUILD.md).
 The Japanese version ([XE.ja.md](XE.ja.md)) is the original; this is its translation.

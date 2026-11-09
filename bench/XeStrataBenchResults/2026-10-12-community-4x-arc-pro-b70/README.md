@@ -1,7 +1,4 @@
 # Community benchmark on 4x Intel Arc Pro B70 (SYCL, layer split)
-
-English | [日本語](README.ja.md)
-
 Measured on 2026-10-12 by JP-devv. **Official upstream source**, commit `8607e667` (xe0.1.43.1), clean
 tree, **no local engine patches** — the only difference from the release is the run configuration
 documented below. Unsloth **UD-Q4_K_XL**, 131,072-token context, layer split across all four cards,

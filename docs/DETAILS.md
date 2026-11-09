@@ -4,9 +4,6 @@ SPDX-FileCopyrightText: 2026 MistVVK and the XeStrata contributors
 SPDX-License-Identifier: LGPL-3.0-or-later AND MIT
 -->
 # XeStrata - the details
-
-English | [日本語](DETAILS.ja.md)
-
 The technical side of XeStrata: the measured speeds, which model to choose, setup's settings, the API, images and how the engine works.
 New here? Start with the [README](../README.md): it has everything you need to install and use it.
 How the engine runs on Intel GPUs, and how that was checked, is in [XE.md](XE.md).

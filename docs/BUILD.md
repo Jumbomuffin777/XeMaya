@@ -3,9 +3,6 @@ SPDX-FileCopyrightText: 2026 MistVVK and the XeStrata contributors
 SPDX-License-Identifier: LGPL-3.0-or-later
 -->
 # Building XeStrata
-
-English | [日本語](BUILD.ja.md)
-
 How to install XeStrata from the source, the engine's build modes, what setup does and the packages it needs, how the deb and rpm packages are made, and the Podman container.
 How to install the packages and use XeStrata is in the [README](../README.md).
 The Japanese version ([BUILD.ja.md](BUILD.ja.md)) is the original; this is its translation.

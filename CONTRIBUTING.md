@@ -2,10 +2,11 @@
 SPDX-FileCopyrightText: 2026 MistVVK and the XeStrata contributors
 SPDX-License-Identifier: LGPL-3.0-or-later
 -->
+
+> **XeMaya** is a fork of XeStrata focused on Intel Arc and on GLM-5.3-Flash and DeepSeek-V4.1-Flash. The
+> guidelines below are XeStrata's and apply here too. For XeMaya, please also include a parity test for new kernels
+> and a token-level comparison against llama.cpp for model changes.
 # Contributing
-
-English | [日本語](CONTRIBUTING.ja.md)
-
 Reports and pull requests are welcome. Before sending one, read the sections below.
 
 ## The first rule: no dependence on the model number

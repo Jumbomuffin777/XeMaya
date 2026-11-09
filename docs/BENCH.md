@@ -3,9 +3,6 @@ SPDX-FileCopyrightText: 2026 MistVVK and the XeStrata contributors
 SPDX-License-Identifier: LGPL-3.0-or-later
 -->
 # Measuring the speed
-
-English | [日本語](BENCH.ja.md)
-
 XeStrata's speed is measured in three ways, and on a PC with image generation set up, that too.
 A user's `xestrata --bench` and a developer's measurements for an upstream merge share one implementation (`tools/bench_core.py`) and the same prompts, conversations and settings,
 so a user's record and the development machines' records go into the same tables.
