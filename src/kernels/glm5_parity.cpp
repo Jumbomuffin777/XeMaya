@@ -5,6 +5,7 @@
 // f9a95ae's graph and ggml CPU operators (MIT License, Copyright (c) 2023-2026 The ggml authors, see
 // third_party/main/ggml/LICENSE): the mHC read, write and mean, the sigmoid router, the KDA gate and step, the clamped
 // SwiGLU.  The references are in double where ggml sums in float, so the tolerances are those of float rounding.
+#include "strata/kernels/bf16_gemv.hpp"
 #include "strata/kernels/glm5.hpp"
 #include "strata/kernels/iq_kernels.hpp"
 #include "strata/kernels/native_mmvq.hpp"
@@ -543,6 +544,54 @@ int test_iq1_s() {
     return bad + (rel < 2e-2 ? 0 : 1);
 }
 
+// ---- XeMaya: F32 mHC mixers (Project Maya's GLM-5.3-Flash files), the products PlainModel takes for them: the decode
+// window's f32_gemv_fp32_mmvf_multi (8 rows a launch) and the prompt's f32_gemm_rows, then glm5_hc_pre on their mixes
+int test_hc_f32() {
+    const int64_t N = 4096, K = HC * N;
+    const float scale[3] = {0.7f, 1.3f, 2.1f};
+    const float rms_eps = 1e-5f, hc_eps = 1e-6f;
+    std::vector<float> fn = randn((size_t) MIX * K, 0.02f), base = randn(MIX, 0.5f);
+    std::vector<float> sc(scale, scale + 3);
+    int bad = 0;
+    for (const int64_t T : {(int64_t) 3, (int64_t) 11, (int64_t) 37}) {
+        const bool prompt = T > 11;
+        std::vector<float> x = randn((size_t) T * K);
+        std::vector<double> rm((size_t) T * MIX);
+        for (int64_t t = 0; t < T; ++t)
+            for (int j = 0; j < MIX; ++j) {
+                double a = 0;
+                for (int64_t i = 0; i < K; ++i) a += (double) x[(size_t) t * K + i] * fn[(size_t) j * K + i];
+                rm[(size_t) t * MIX + j] = a;
+            }
+        std::vector<float> rmf(rm.begin(), rm.end());
+        std::vector<double> ry, rpost, rcomb;
+        ref_hc_pre(x, rmf, scale, base.data(), rms_eps, hc_eps, 20, N, T, ry, rpost, rcomb);
+
+        strata::parity::Device dev;
+        float *dx = dev.upload(x), *dw = dev.upload(fn), *ds = dev.upload(sc), *db = dev.upload(base);
+        float *dm = dev.alloc<float>((size_t) T * MIX), *dy = dev.alloc<float>((size_t) T * N),
+              *dp = dev.alloc<float>((size_t) T * HC), *dc = dev.alloc<float>((size_t) T * HC * HC);
+        if (prompt) {
+            strata::kernels::f32_gemm_rows(dx, K, dw, dm, MIX, K, MIX, T, strata::parity::stream());
+        } else {
+            for (int64_t t0 = 0; t0 < T; t0 += 8)
+                strata::kernels::f32_gemv_fp32_mmvf_multi(dx + t0 * K, K, dw, dm + t0 * MIX, MIX, K, MIX,
+                                                          (int) std::min<int64_t>(8, T - t0), strata::parity::stream());
+        }
+        strata::kernels::glm5_hc_pre(dx, dm, ds, db, rms_eps, hc_eps, 20, dy, dp, dc, N, T, strata::parity::stream());
+        std::vector<float> m((size_t) T * MIX), y((size_t) T * N), post((size_t) T * HC), comb((size_t) T * HC * HC);
+        strata::parity::copy_out(m.data(), dm, m.size());
+        strata::parity::copy_out(y.data(), dy, y.size());
+        strata::parity::copy_out(post.data(), dp, post.size());
+        strata::parity::copy_out(comb.data(), dc, comb.size());
+        const std::string tag = std::string(prompt ? "F32 mix, gemm_rows" : "F32 mix, mmvf") + " T=" + std::to_string(T);
+        bad += compare((tag + ": mixes").c_str(), m, rm, 1e-4) + compare((tag + ": hc_pre y").c_str(), y, ry, 1e-4) +
+               compare((tag + ": hc_pre post").c_str(), post, rpost, 1e-4) +
+               compare((tag + ": hc_pre comb").c_str(), comb, rcomb, 1e-4);
+    }
+    return bad;
+}
+
 // ---- the clamped SwiGLU
 int test_swiglu_clamp() {
     const size_t n = 4096;
@@ -572,7 +621,7 @@ int main(int argc, char** argv) {
             return 2;
         }
     std::printf("glm5_parity: GLM-5.3-Flash's kernels against host references\n");
-    const int bad = test_hc() + test_router() + test_kda() + test_dsa() + test_iq1_s() + test_swiglu_clamp();
+    const int bad = test_hc() + test_hc_f32() + test_router() + test_kda() + test_dsa() + test_iq1_s() + test_swiglu_clamp();
     std::printf("%s\n", bad ? "FAIL" : "PASS");
     return bad ? 1 : 0;
 }

@@ -26,6 +26,7 @@
 #include "strata/artifact/gguf_reader.hpp"
 #include "strata/core/runtime.hpp"
 #include "strata/kernels/bf16_gemv.hpp"
+#include "strata/kernels/bf16_gemv.hpp"
 #include "strata/kernels/cpu/expert_layout.hpp"
 #include "strata/kernels/cpu/native_expert.hpp"
 #include "strata/kernels/elementwise.hpp"
@@ -54,6 +55,7 @@ namespace k = strata::kernels;
 
 constexpr int kHC = 4, kMix = (2 + kHC) * kHC;
 constexpr int kBF16 = 30;
+constexpr int kF32 = 0;
 constexpr int kQ6K = 14, kQ80 = 8;
 constexpr float kL2Eps = 1e-6f;   // llama.cpp's FLA l2 norm
 
@@ -82,10 +84,11 @@ bool PlainModel::load_gblock(const GgufModel& m, int64_t l, GBlock& b, std::stri
     if (!upload_f32(m, p + "attn_norm.weight", N, b.attn_norm, err) ||
         !upload_f32(m, p + "ffn_norm.weight", N, b.ffn_norm, err))
         return false;
-    if (!mtp && (!upload(m, p + "hc_attn_fn.weight", b.hc_attn_fn, err) ||
+    // the mixers: F32 in Project Maya's files (XeMaya), quantized in Unsloth's; upload's f32 takes either
+    if (!mtp && (!upload(m, p + "hc_attn_fn.weight", b.hc_attn_fn, err, true) ||
         !upload_f32(m, p + "hc_attn_base.weight", kMix, b.hc_attn_base, err) ||
         !upload_f32(m, p + "hc_attn_scale.weight", 3, b.hc_attn_scale, err) ||
-        !upload(m, p + "hc_ffn_fn.weight", b.hc_ffn_fn, err) ||
+        !upload(m, p + "hc_ffn_fn.weight", b.hc_ffn_fn, err, true) ||
         !upload_f32(m, p + "hc_ffn_base.weight", kMix, b.hc_ffn_base, err) ||
         !upload_f32(m, p + "hc_ffn_scale.weight", 3, b.hc_ffn_scale, err)))
         return false;
@@ -419,9 +422,17 @@ bool PlainModel::record_gblock(const GBlock& b, int64_t l, int T, uint32_t& ring
     const float eps = (float) s.rms_eps, hc_eps = (float) s.hc_eps;
     const int iters = (int) s.hc_sinkhorn_iters;
     // hc_pre: the mixes of the four streams as they are (their RMS is applied in glm5_hc_pre), then the block's row
+    // F32 mixers (XeMaya: Project Maya's files) in F32 throughout, as llama.cpp's mul_mat, 8 rows a launch
     auto hc_read = [&](const W& fn, const float* scale, const float* base, const float* norm) {
-        k::native_quantize_q8_1(g_hs_, g_xq_, (int) (kHC * N), T, cs);
-        k::native_mmvq(fn.type, fn.data, g_xq_, g_mixes_, fn.n_in, fn.n_out, T, cs);
+        if (fn.type == kF32) {
+            for (int t0 = 0; t0 < T; t0 += 8)
+                k::f32_gemv_fp32_mmvf_multi(g_hs_ + (size_t) t0 * kHC * N, kHC * N, static_cast<const float*>(fn.data),
+                                            g_mixes_ + (size_t) t0 * fn.n_out, fn.n_out, fn.n_in, fn.n_out,
+                                            std::min(8, T - t0), cs);
+        } else {
+            k::native_quantize_q8_1(g_hs_, g_xq_, (int) (kHC * N), T, cs);
+            k::native_mmvq(fn.type, fn.data, g_xq_, g_mixes_, fn.n_in, fn.n_out, T, cs);
+        }
         k::glm5_hc_pre(g_hs_, g_mixes_, scale, base, eps, hc_eps, iters, g_y_, g_post_, g_comb_, N, T, cs);
         k::native_qsa_rms_norm_weighted_q8_1(g_y_, norm, hn_, g_xq_, (int) N, T, eps, cs);   // hn_ and its q8_1
     };

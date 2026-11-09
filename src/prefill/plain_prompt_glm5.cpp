@@ -78,6 +78,10 @@ bool PlainModel::prompt_chunks_glm5(const int32_t* tokens, int64_t n, int64_t po
     const bool dense_on = dense_env && prefill::mmq::chosen();
     auto prod = [&](int type, const void* w, int64_t n_in, int64_t n_out, const float* x, int64_t ldx, float* y,
                     int64_t T, int64_t ldy) {
+        if (type == 0) {   // F32 (XeMaya: Project Maya's mHC mixers): F32 throughout, as llama.cpp's mul_mat
+            k::f32_gemm_rows(x, ldx, static_cast<const float*>(w), y, ldy, n_in, n_out, T, cs);
+            return;
+        }
         if (dense_on && prefill::mmq::supported(type) && n_out % 128 == 0 && n_in % 32 == 0) {
             prefill::mmq::quantize(x, nullptr, P.xq, type, n_in, ldx, T, cs);
             prefill::mmq::Product p;
