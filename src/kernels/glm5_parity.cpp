@@ -692,13 +692,15 @@ int test_mla_tiled() {
     return bad;
 }
 
-// --bench-mla [P]: glm5_mla_attn and glm5_mla_attn_tiled at GLM-5.3-Flash's shape (64 heads, L 512): a P-token prompt
-// chunk over all its earlier cells (P <= 8192: every cell is selected), and decode windows of 1 and 4 tokens over the
-// cache's P cells (split cells)
+// --bench-mla [P]: glm5_mla_attn and glm5_mla_attn_tiled at GLM-5.3-Flash's shape (64 heads, L 512, a selection of at
+// most 8,192 cells: the top 2,048 pools of 4) over a cache of P cells: the prompt's last chunk (up to 4,096 tokens, the
+// engine's default chunk) and decode windows of 1 and 4 tokens.  Past 8,192 cells a token's selection is spread over
+// its earlier cells.
 int bench_mla(int64_t P) {
     using namespace strata::kernels;
     constexpr int H = 64, L = mla::L;
-    const int64_t cap = std::max<int64_t>(P, 1);
+    constexpr int64_t kSel = 8192;
+    const int64_t cap = std::min<int64_t>(std::max<int64_t>(P, 1), kSel);
     std::vector<uint16_t> lat((size_t) (P * L));
     {
         std::vector<float> f = randn(lat.size(), 0.5f);
@@ -718,15 +720,20 @@ int bench_mla(int64_t P) {
         }
         return best;
     };
-    std::printf("bench mla_attn: 64 heads, L 512, %lld cells\n", (long long) P);
-    for (const int64_t T : {P, (int64_t) 1, (int64_t) 4}) {
-        const bool prompt = T == P;
+    std::printf("bench mla_attn: 64 heads, L 512, a cache of %lld cells, selections of up to %lld\n", (long long) P,
+                (long long) cap);
+    const int64_t chunk = std::min<int64_t>(P, 4096);
+    for (const int64_t T : {chunk, (int64_t) 1, (int64_t) 4}) {
+        const bool prompt = T == chunk && T > 4;
         std::vector<int32_t> steps((size_t) T * kStepCount, 0), ids((size_t) (T * cap));
+        double cells = 0;
         for (int64_t t = 0; t < T; ++t) {
-            const int32_t pos = prompt ? (int32_t) t : (int32_t) (P - T + t);
+            const int32_t pos = (int32_t) (P - T + t);
+            const int64_t w = std::min<int64_t>(cap, pos + 1);
             steps[(size_t) t * kStepCount + kStepPos] = pos;
-            steps[(size_t) t * kStepCount + kStepWidth] = (int32_t) std::min<int64_t>(cap, pos + 1);
-            for (int64_t j = 0; j < cap; ++j) ids[(size_t) (t * cap + j)] = (int32_t) std::min<int64_t>(j, P - 1);
+            steps[(size_t) t * kStepCount + kStepWidth] = (int32_t) w;
+            for (int64_t j = 0; j < w; ++j) ids[(size_t) (t * cap + j)] = (int32_t) (j * (pos + 1) / w);
+            cells += (double) w;
         }
         std::vector<float> qv = randn((size_t) (T * H * L), 0.08f);
         int32_t *ds = dev.upload(steps), *di = dev.upload(ids);
@@ -736,9 +743,10 @@ int bench_mla(int64_t P) {
         void* st = strata::parity::stream();
         const double a = time_ms([&] { glm5_mla_attn(dq, dl, di, cap, ds, H, 0.0625f, T, dout, st); });
         const double b = time_ms([&] { glm5_mla_attn_tiled(dq, dl, di, cap, ds, H, 0.0625f, T, dout, dsc, sf, st); });
-        std::printf("  %-28s original %9.3f ms   tiled %9.3f ms   %.2fx\n",
+        const double gflop = cells * H * 2.0 * 2.0 * L / 1e9;   // scores and the weighted sum
+        std::printf("  %-30s original %9.3f ms (%6.0f GFLOP/s)   tiled %9.3f ms (%6.0f GFLOP/s)   %.2fx\n",
                     (prompt ? "prompt chunk of " + std::to_string(T) + " tokens" : "decode window of " + std::to_string(T)).c_str(),
-                    a, b, a / b);
+                    a, gflop / (a / 1e3), b, gflop / (b / 1e3), a / b);
     }
     return 0;
 }
