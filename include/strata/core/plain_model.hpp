@@ -183,6 +183,12 @@ public:
     };
     bool save_state(int64_t tokens, Snapshot& snap, std::string& err);
     bool restore_state(const Snapshot& snap, std::string& err);
+    /// XeMaya: the recurrent layers' state alone, every stage's: a prompt-end checkpoint.  The attention rows of the
+    /// tokens it covers are a function of those tokens alone and stay in place while the live conversation keeps them,
+    /// so restoring this over a live conversation that starts with the same tokens resumes it after them.  The parts'
+    /// buffers are reused from one save to the next.
+    bool save_recurrent(int64_t tokens, Snapshot& snap, std::string& err);
+    bool restore_recurrent(const Snapshot& snap, std::string& err);
     /// The bytes save_state would take for `tokens` tokens
     size_t state_bytes(int64_t tokens) const;
     /// Tokens [0, T) at positions pos .. pos + T - 1 (T <= max_t): out[t] is the greedy token after token t, and with

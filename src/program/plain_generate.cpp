@@ -309,6 +309,13 @@ static int plain_serve(strata::core::PlainModel& model, const strata::core::Plai
     const int64_t ctx = model.max_cells(), V = model.vocab(), N = model.spec().n_embd;
     // the tokens the state holds, positions 0 .. live.size() - 1; a picture's cells as keys of their own (below)
     std::vector<int32_t> live;
+    // XeMaya: the prompt-end checkpoint (the recurrent state when the last prompt had been read) and its tokens
+    struct { std::vector<int32_t> ids; strata::core::PlainModel::Snapshot snap; } ckpt;
+    static const bool ckpt_on = [] {
+        const char* v = std::getenv("XEMAYA_PROMPT_CHECKPOINT");
+        return v == nullptr || std::strcmp(v, "0") != 0;
+    }();
+    bool ckpt_pending = false;
     int64_t live_prompt = 0;     // how many of them the last request sent (its prompt)
     // --vision: the pictures' rows (img_rows, row_ptr by position), the cells' M-RoPE positions (pos3, the identity
     // while no request has pictures)
@@ -649,6 +656,24 @@ static int plain_serve(strata::core::PlainModel& model, const strata::core::Plai
                 if (live_prompt <= 0 || (int64_t) common < live_prompt) park_live(cache.parked.end());
             }
         }
+        // XeMaya: the prompt-end checkpoint.  A recurrent model resumes only a request that extends all of the live
+        // conversation, and an agent's next turn re-renders the reply it got (its whitespace, its calls' layout), so
+        // it shares the last prompt but not the reply: the whole conversation was read again.  The recurrent state
+        // saved when the last prompt had been read, restored over the attention rows the live conversation still
+        // holds for those tokens, resumes it there.
+        if (ckpt_on && model.recurrent() && !ckpt.ids.empty() && resume < (int64_t) ckpt.ids.size() &&
+            (int64_t) ckpt.ids.size() <= n - 1 && live.size() >= ckpt.ids.size() &&
+            std::equal(ckpt.ids.begin(), ckpt.ids.end(), live.begin()) &&
+            std::equal(ckpt.ids.begin(), ckpt.ids.end(), keys.begin())) {
+            if (!model.restore_recurrent(ckpt.snap, err)) {
+                std::printf("FATAL %s\n", err.c_str());
+                std::fflush(stdout);
+                return 1;
+            }
+            std::fprintf(stderr, "strata (%s): prompt checkpoint: resumed at %lld of %lld tokens (the live conversation "
+                                 "held %zu)\n", arch.c_str(), (long long) ckpt.ids.size(), (long long) n, live.size());
+            resume = (int64_t) ckpt.ids.size();
+        }
         if (resume == 0 && !live.empty() && !model.reset(err)) {
             std::printf("FATAL %s\n", err.c_str());
             std::fflush(stdout);
@@ -689,6 +714,7 @@ static int plain_serve(strata::core::PlainModel& model, const strata::core::Plai
             continue;
         }
         live.assign(keys.begin(), keys.end());
+        ckpt_pending = ckpt_on && model.recurrent();   // saved once the first token is out (off the TTFT path)
         const Clock::time_point t1 = Clock::now();
         const char* finish = "length";
         long long produced = 0;
@@ -702,6 +728,16 @@ static int plain_serve(strata::core::PlainModel& model, const strata::core::Plai
             std::printf("T %d\n", next);
             std::fflush(stdout);
             ++produced;
+            if (ckpt_pending) {   // the state still that of the prompt: no window has read a generated token yet
+                ckpt_pending = false;
+                if (model.save_recurrent((int64_t) live.size(), ckpt.snap, err)) {
+                    ckpt.ids = live;
+                } else {
+                    std::fprintf(stderr, "strata (%s): prompt checkpoint not kept: %s\n", arch.c_str(), err.c_str());
+                    ckpt.ids.clear();
+                    err.clear();
+                }
+            }
             if (std::find(eos.begin(), eos.end(), next) != eos.end()) { finish = "stop"; break; }
             if (produced >= max_new) break;
             if (at < pend.size()) {   // the window read this one already

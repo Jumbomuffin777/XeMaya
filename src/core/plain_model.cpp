@@ -1899,6 +1899,69 @@ bool PlainModel::restore_state(const Snapshot& snap, std::string& err) {
     return true;
 }
 
+bool PlainModel::save_recurrent(int64_t tokens, Snapshot& snap, std::string& err) {
+    snap.tokens = tokens;
+    size_t i = 0;
+    for (PlainModel* st : chain()) {
+        const OnDevice on(st->dev_);
+        if (!st->settle_swaps(true, err)) return false;
+        if (!strata::gpu::stream_sync(st->cs_)) {
+            err = std::string("plain model: ") + strata::gpu::last_error();
+            return false;
+        }
+        for (size_t g = 0; g < st->gdn_state_.size(); ++g) {
+            if (st->gdn_state_[g] == nullptr) continue;
+            const StatePart parts[2] = {{st->gdn_state_[g], st->state_bytes_}, {st->gdn_conv_[g], st->conv_bytes_}};
+            for (const StatePart& p : parts) {
+                if (i >= snap.parts.size()) snap.parts.emplace_back(p.bytes);
+                else if (snap.parts[i].size() != p.bytes) snap.parts[i].resize(p.bytes);
+                if (p.bytes > 0 && !strata::gpu::copy(snap.parts[i].data(), p.dev, p.bytes)) {
+                    err = std::string("plain model: saving the recurrent state: ") + strata::gpu::last_error();
+                    return false;
+                }
+                ++i;
+            }
+        }
+    }
+    snap.parts.resize(i);
+    return true;
+}
+
+bool PlainModel::restore_recurrent(const Snapshot& snap, std::string& err) {
+    size_t i = 0;
+    for (PlainModel* st : chain()) {
+        const OnDevice on(st->dev_);
+        if (!st->settle_swaps(true, err)) return false;
+        if (!strata::gpu::stream_sync(st->cs_)) {
+            err = std::string("plain model: ") + strata::gpu::last_error();
+            return false;
+        }
+        for (size_t g = 0; g < st->gdn_state_.size(); ++g) {
+            if (st->gdn_state_[g] == nullptr) continue;
+            const StatePart parts[2] = {{st->gdn_state_[g], st->state_bytes_}, {st->gdn_conv_[g], st->conv_bytes_}};
+            for (const StatePart& p : parts) {
+                if (i >= snap.parts.size() || snap.parts[i].size() != p.bytes) {
+                    err = "plain model: a recurrent state of another shape";
+                    return false;
+                }
+                if (p.bytes > 0 && !strata::gpu::copy(p.dev, snap.parts[i].data(), p.bytes)) {
+                    err = std::string("plain model: restoring the recurrent state: ") + strata::gpu::last_error();
+                    return false;
+                }
+                ++i;
+            }
+        }
+        st->cur_ = -1;
+        st->drafts_.clear();
+        st->mtp_h_set_ = false;
+    }
+    if (i != snap.parts.size()) {
+        err = "plain model: a recurrent state of another model";
+        return false;
+    }
+    return true;
+}
+
 bool PlainModel::reset(std::string& err) {
     for (auto& st : next_) {
         const OnDevice on(st->dev_);
