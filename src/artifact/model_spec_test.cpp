@@ -7,7 +7,11 @@
 //   2. glm5next (Project Maya's spelling of glm5-next, GLM-5.3-Flash's shape): a layer without K/V heads is
 //      recurrent, the three dense layers do not route and the MoE index starts after them, the per-layer clamp;
 //   3. qwen3moe (llm-jp-4.1's shape): nothing recurrent, no shared expert;
-//   4. refusals, each naming what is wrong: an unknown architecture, a missing required key, an mHC of 3 streams.
+//   4. refusals, each naming what is wrong: an unknown architecture, a missing required key, an mHC of 3 streams;
+//   5. deepseek41 (DeepSeek-V4.1-Flash's shape, XeMaya): the compressed layers' KV and top-k sources, the candidate
+//      blocks, the Engram modules, sqrt-softplus gating, and the refusals llama.cpp's loader makes.
+//
+// `model_spec_test FILE...` reads real GGUFs (each one's first shard) and prints the shape instead.
 //
 // The fixtures carry only the metadata the reader looks at, and one F32[8] tensor so the file has a data section.
 #include "strata/artifact/model_spec.hpp"
@@ -151,6 +155,50 @@ std::vector<Kv> glm5next(uint32_t hc) {
             boolean(a + "attention.indexer.kpool_select_tail", true)};
 }
 
+Kv u64s(const std::string& k, const std::vector<uint64_t>& v) {
+    Kv e{k, {}};
+    put<uint32_t>(e.val, 9);    // ARRAY
+    put<uint32_t>(e.val, 10);   // of U64
+    put<uint64_t>(e.val, v.size());
+    for (uint64_t x : v) put<uint64_t>(e.val, x);
+    return e;
+}
+
+// DeepSeek-V4.1-Flash-1017's metadata as its GGUF (ISTA-DASLab's GSQ-RCO) writes it, the Engram tables shortened.
+std::vector<Kv> deepseek41(uint32_t gating, uint32_t kv_src_first) {
+    const std::string a = "deepseek41.";
+    std::vector<uint32_t> ratios(43, 0);
+    for (int l = 2; l < 20; ++l) ratios[(size_t) l] = 2;
+    for (int l = 20; l < 40; ++l) ratios[(size_t) l] = 1;
+    std::vector<uint64_t> mult(8, 1000003), offs, vocab;
+    for (int c = 0; c < 48; ++c) { offs.push_back((uint64_t) c * 100); vocab.push_back(97); }
+    std::vector<uint32_t> map(1000);
+    for (uint32_t i = 0; i < map.size(); ++i) map[i] = i / 2;
+    return {str("general.architecture", "deepseek41"), u32(a + "block_count", 40), u32(a + "embedding_length", 5120),
+            u32(a + "context_length", 1048576), u32(a + "attention.head_count", 64), u32(a + "attention.head_count_kv", 1),
+            f32(a + "attention.layer_norm_rms_epsilon", 1e-20f), u32(a + "attention.key_length", 512),
+            u32(a + "attention.value_length", 512), u32(a + "rope.dimension_count", 64), f32(a + "rope.freq_base", 1e4f),
+            str(a + "rope.scaling.type", "yarn"), f32(a + "rope.scaling.factor", 16.0f),
+            u32(a + "expert_count", 384), u32(a + "expert_used_count", 6), u32(a + "expert_gating_func", gating),
+            u32(a + "expert_feed_forward_length", 2304), u32(a + "expert_shared_count", 1),
+            f32(a + "expert_weights_scale", 1.5f), boolean(a + "expert_weights_norm", true),
+            f32s(a + "swiglu_clamp_exp", std::vector<float>(40, 10.0f)), u32(a + "attention.q_lora_rank", 1280),
+            u32(a + "attention.sliding_window", 128), u32(a + "attention.output_group_count", 8),
+            u32(a + "attention.output_lora_rank", 1024), f32(a + "attention.compress_rope_freq_base", 160000.0f),
+            u32s(a + "attention.compress_ratios", ratios), u32(a + "attention.indexer.head_count", 32),
+            u32(a + "attention.indexer.key_length", 128), u32(a + "attention.indexer.top_k", 512),
+            u32s(a + "attention.kv_source_layers", {kv_src_first, 8, 14, 20}),
+            u32s(a + "attention.indexer.source_layers", {2, 8, 14, 20, 24, 28, 32, 36}),
+            u32(a + "attention.indexer.candidate_source_layer", 20),
+            u32(a + "attention.indexer.candidate_top_k_blocks", 2048), u32(a + "attention.indexer.candidate_block_size", 8),
+            u32(a + "hyper_connection.count", 4), u32(a + "hyper_connection.sinkhorn_iterations", 20),
+            f32(a + "hyper_connection.epsilon", 1e-6f), u32(a + "hash_layer_count", 0),
+            u32s(a + "ple.layers", {1, 14}), u32(a + "ple.ngram_size", 4), u32(a + "ple.heads_per_ngram", 8),
+            u32(a + "embedding_length_per_layer_input", 256), u64s(a + "ple.layer_multipliers", mult),
+            u64s(a + "ple.head_offsets", offs), u64s(a + "ple.head_vocab_sizes", vocab),
+            u32(a + "engram.pad_token_id", 2), u32s(a + "engram.token_map", map)};
+}
+
 std::vector<Kv> qwen3moe() {
     const std::string a = "qwen3moe.";
     return {str("general.architecture", "qwen3moe"), u32(a + "block_count", 32), u32(a + "embedding_length", 2560),
@@ -217,12 +265,61 @@ static int run() {
         check(!read(glm5next(3), s, err) && err.find("hyper_connection.count") != std::string::npos, "an mHC of 3 streams");
     }
 
+    std::printf("deepseek41 (DeepSeek-V4.1-Flash)\n");
+    {
+        strata::ModelSpec s;
+        const bool ok = read(deepseek41(4, 2), s, err);
+        check(ok, ("reads: " + err).c_str());
+        check(s.arch == strata::ModelArch::DeepSeek41 && s.n_layer == 40 && s.n_nextn == 0, "40 trunk layers, no MTP");
+        check(s.gating == strata::ExpertGating::SqrtSoftplus && s.n_ff_shexp == 2304 && s.n_moe_layers() == 40,
+              "sqrt-softplus, the shared expert n_ff_exp wide, every layer routes");
+        check(s.compress_ratios.size() == 40 && s.kv_src[0] == -1 && s.kv_src[7] == 2 && s.kv_src[9] == 8 &&
+                  s.kv_src[25] == 20 && s.topk_src[25] == 24 && s.topk_src[39] == 36,
+              "each compressed layer reads the latest KV and top-k source");
+        check(s.cand_src == 20 && s.cand_topk_blocks == 2048 && s.cand_block_size == 8, "the candidate blocks");
+        check(s.engram_layers.size() == 2 && s.engram_index(14) == 1 && s.engram_index(2) == -1 &&
+                  s.engram_n_heads == 24 && s.engram_head_dim == 256 && s.engram_token_map.size() == 1000 &&
+                  s.engram_token_map[999] == 499,
+              "two Engram modules of 24 heads, the token map");
+        check(s.sliding_window == 128 && s.o_group_count == 8 && s.o_lora_rank == 1024 && s.compress_rope_base == 160000.0,
+              "the window, the grouped output, the compressed RoPE base");
+        check(!read(deepseek41(2, 2), s, err) && err.find("sqrtsoftplus") != std::string::npos, "sigmoid gating refused");
+        check(!read(deepseek41(4, 0), s, err) && err.find("compress ratio 0") != std::string::npos,
+              "a KV source on an uncompressed layer refused");
+    }
+
     std::printf("%s\n", g_fail ? "FAIL" : "PASS");
     return g_fail ? 1 : 0;
 }
 
-int main() {
+// Real files: print the shape read_model_spec finds, or why it refuses.
+static int dump(int argc, char** argv) {
+    int bad = 0;
+    for (int i = 1; i < argc; ++i) {
+        strata::GgufFile g(argv[i]);
+        strata::ModelSpec s;
+        std::string err;
+        if (!strata::read_model_spec(g, s, err)) {
+            std::printf("%s: REFUSED: %s\n", argv[i], err.c_str());
+            ++bad;
+            continue;
+        }
+        int64_t rec = 0, comp = 0;
+        for (bool r : s.recurrent) rec += r;
+        for (int64_t r : s.compress_ratios) comp += r != 0;
+        std::printf("%s: %s, %lld trunk + %lld MTP layers, n_embd %lld, %lld heads, experts %lld (%lld used, %lld MoE "
+                    "layers), recurrent %lld, gating %u, mHC %lld, indexer top-k %lld, compressed %lld, Engram %zu\n",
+                    argv[i], s.arch_name.c_str(), (long long) s.n_layer, (long long) s.n_nextn, (long long) s.n_embd,
+                    (long long) s.n_head, (long long) s.n_expert, (long long) s.n_expert_used,
+                    (long long) s.n_moe_layers(), (long long) rec, (unsigned) s.gating, (long long) s.hc,
+                    (long long) s.idx_top_k, (long long) comp, s.engram_layers.size());
+    }
+    return bad ? 1 : 0;
+}
+
+int main(int argc, char** argv) {
     try {
+        if (argc > 1) return dump(argc, argv);
         return run();
     } catch (const std::exception& e) {
         std::printf("model_spec_test: %s\n", e.what());

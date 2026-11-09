@@ -327,7 +327,9 @@ struct MetaValue {
     double num() const { return (type == MetaType::F32 || type == MetaType::F64) ? f : (double)u; }
 };
 
-inline MetaValue read_value(Cursor& c, MetaType t, int depth = 0) {
+// `keep_all`: keep every item of an array instead of the first 64 (XeMaya: DeepSeek-V4.1's engram.token_map, read
+// whole at load; the tokenizer's large arrays keep the sample).
+inline MetaValue read_value(Cursor& c, MetaType t, int depth = 0, bool keep_all = false) {
     if (depth > 2) throw std::runtime_error("GGUF: array nesting too deep");
     MetaValue v;
     v.type = t;
@@ -375,10 +377,11 @@ inline MetaValue read_value(Cursor& c, MetaType t, int depth = 0) {
         v.elem = (MetaType)c.read<uint32_t>();
         v.count = c.read<uint64_t>();
         if (v.count > (1u << 24)) throw std::runtime_error("GGUF: implausible array length");
-        v.items.reserve((size_t)std::min<uint64_t>(v.count, 64));
+        const uint64_t keep = keep_all ? v.count : 64;
+        v.items.reserve((size_t)std::min<uint64_t>(v.count, keep));
         for (uint64_t i = 0; i < v.count; ++i) {
             MetaValue e = read_value(c, v.elem, depth + 1);
-            if (i < 64) v.items.push_back(std::move(e)); // keep a sample; the count is what matters
+            if (i < keep) v.items.push_back(std::move(e)); // keep a sample; the count is what matters
         }
         break;
     }
@@ -506,7 +509,10 @@ private:
         for (uint64_t i = 0; i < n_kv; ++i) {
             std::string key = c.str();
             MetaType t = (MetaType)c.read<uint32_t>();
-            meta_.emplace(std::move(key), read_value(c, t));
+            static const std::string token_map = ".engram.token_map";
+            const bool keep_all = key.size() > token_map.size() &&
+                                  key.compare(key.size() - token_map.size(), token_map.size(), token_map) == 0;
+            meta_.emplace(std::move(key), read_value(c, t, 0, keep_all));
         }
         tensors_.reserve((size_t)n_tensors);
         // GGUF has no index to arbitrate between two tensors of one name: find() is first-match, so a

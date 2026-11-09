@@ -13,6 +13,10 @@
 //   qwen3moe   Qwen3 MoE (llm-jp-4.1-32b-a3b): full attention only, no shared expert
 //   glm5-next  GLM-5.3-Flash: KDA + NoPE MLA with a k-pool indexer, mHC, leading dense layers, MTP.  Also spelled
 //              `glm5next` (Project Maya's quants, after unsloth's first GGUFs), with the same keys under that name.
+//   deepseek41 DeepSeek-V4.1-Flash (XeMaya): MQA over compressed KV with a lightning indexer (CSA/HCA), a sliding
+//              window, grouped low-rank output, mHC, sqrt-softplus routing, Engram n-gram tables.  The keys and their
+//              checks follow llama.cpp's src/models/deepseek4.cpp and deepseek41.cpp (master 8642541b2; MIT License,
+//              Copyright (c) 2023-2026 The ggml authors).
 //
 // `block_count` counts the MTP (NextN) layers too; `n_layer` here is the trunk, block_count minus
 // `nextn_predict_layers`, as llama.cpp's `n_layer()`.  A key a model does not carry reads as 0 (or false), and
@@ -23,6 +27,8 @@
 
 #include "strata/artifact/gguf_reader.hpp"
 
+#include <algorithm>
+#include <climits>
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -30,10 +36,10 @@
 
 namespace strata {
 
-enum class ModelArch { Qwen4Exp, Qwen35Moe, Qwen3Moe, Glm5Next, Qwen35 };
+enum class ModelArch { Qwen4Exp, Qwen35Moe, Qwen3Moe, Glm5Next, Qwen35, DeepSeek41 };
 
 /// llama.cpp's `llama_expert_gating_func_type`
-enum class ExpertGating : uint32_t { None = 0, Softmax = 1, Sigmoid = 2 };
+enum class ExpertGating : uint32_t { None = 0, Softmax = 1, Sigmoid = 2, SoftmaxWeight = 3, SqrtSoftplus = 4 };
 
 struct ModelSpec {
     ModelArch arch = ModelArch::Qwen4Exp;
@@ -86,6 +92,30 @@ struct ModelSpec {
     int64_t idx_n_head = 0, idx_key_length = 0, idx_top_k = 0, idx_kpool = 0;
     bool idx_kpool_select_tail = false;
 
+    // DeepSeek-V4.1-Flash (deepseek41)
+    int64_t sliding_window = 0;
+    int64_t o_group_count = 0, o_lora_rank = 0;   ///< the grouped low-rank attention output
+    double compress_rope_base = 0;                ///< RoPE base of the compressed KV
+    int64_t hash_layer_count = 0;                 ///< leading hash-routed layers (V4.1: none)
+    std::vector<int64_t> compress_ratios;         ///< per trunk layer: 0 none, 1 or 2 (llama.cpp's dsv4_compress_ratios)
+    std::vector<int64_t> kv_src, topk_src;        ///< per trunk layer: the layer whose compressed KV / top-k it reads, -1
+    int64_t cand_src = -1, cand_topk_blocks = 0, cand_block_size = 0;   ///< the indexer's candidate blocks
+    // Engram (deepseek41.ple.*): one n-gram hash module per Engram layer, all tables in one per_layer_token_embd
+    std::vector<int64_t> engram_layers;           ///< trunk layers with a module, ascending
+    int64_t engram_ngram = 0, engram_heads_per_ngram = 0, engram_head_dim = 0;
+    int64_t engram_n_heads = 0;                   ///< columns (hash heads) of one module: (ngram - 1) * heads_per_ngram
+    std::vector<uint64_t> engram_multipliers;     ///< modules x ngram
+    std::vector<uint64_t> engram_offsets, engram_vocab;   ///< modules x n_heads: each head's first row and row count
+    int64_t engram_pad_id = 0;
+    std::vector<int32_t> engram_token_map;        ///< token id -> Engram token id
+
+    /// The Engram module of trunk layer `l`, -1 when it has none.
+    int64_t engram_index(int64_t l) const {
+        for (size_t i = 0; i < engram_layers.size(); ++i)
+            if (engram_layers[i] == l) return (int64_t) i;
+        return -1;
+    }
+
     /// True when trunk layer `l` routes experts (the MTP layers are not counted here).
     bool layer_routes(int64_t l) const { return n_expert > 0 && l >= n_dense_lead && l < n_layer; }
     /// Trunk layers that route experts.
@@ -128,6 +158,147 @@ inline bool spec_per_layer(const GgufFile& g, const std::string& arch, const cha
 
 }  // namespace detail
 
+namespace detail {
+
+inline bool spec_uarr(const GgufFile& g, const std::string& arch, const char* key, std::vector<uint64_t>& out) {
+    out.clear();
+    const MetaValue* v = spec_get(g, arch, key);
+    if (!v || v->type != MetaType::ARRAY) return false;
+    for (const MetaValue& e : v->items) out.push_back(e.u);
+    return true;
+}
+
+}  // namespace detail
+
+/// DeepSeek-V4.1-Flash's own keys and their consistency, as llama.cpp's deepseek4.cpp and deepseek41.cpp check them
+/// (load_arch_hparams).  Called by read_model_spec after the common keys.
+inline bool read_deepseek41(const GgufFile& g, ModelSpec& s, std::string& err) {
+    using namespace detail;
+    const std::string& A = s.arch_name;
+    const char* required[] = {"attention.q_lora_rank", "attention.sliding_window", "attention.output_group_count",
+                              "attention.output_lora_rank", "attention.compress_rope_freq_base",
+                              "attention.compress_ratios", "attention.indexer.head_count",
+                              "attention.indexer.key_length", "attention.indexer.top_k",
+                              "attention.kv_source_layers", "attention.indexer.source_layers",
+                              "hyper_connection.count", "hyper_connection.sinkhorn_iterations",
+                              "expert_shared_count", "expert_weights_scale"};
+    for (const char* k : required)
+        if (!spec_get(g, A, k)) { err = "missing " + A + "." + k; return false; }
+    if (s.n_nextn != 0) {
+        err = A + ": DeepSeek-V4.1 has no MTP layer in the model (its draft is a separate DSpark file)";
+        return false;
+    }
+    if (s.n_dense_lead != 0) { err = A + ": leading dense layers are not part of DeepSeek-V4.1"; return false; }
+    if (s.idx_top_k <= 0) { err = A + ": attention.indexer.top_k must be above 0"; return false; }
+    if (s.hc != 4) { err = A + ".hyper_connection.count " + std::to_string(s.hc) + ", only 4 is supported"; return false; }
+    s.sliding_window = spec_int(g, A, "attention.sliding_window");
+    s.o_group_count = spec_int(g, A, "attention.output_group_count");
+    s.o_lora_rank = spec_int(g, A, "attention.output_lora_rank");
+    s.compress_rope_base = spec_num(g, A, "attention.compress_rope_freq_base");
+    s.hash_layer_count = spec_int(g, A, "hash_layer_count");
+    if (s.n_ff_shexp == 0) s.n_ff_shexp = s.n_ff_exp * s.n_expert_shared;   // deepseek41.cpp: n_ff_exp per shared expert
+    if (s.sliding_window <= 0 || s.o_group_count <= 0 || s.o_lora_rank <= 0 || s.q_lora_rank <= 0 ||
+        (s.n_head * s.key_length) % s.o_group_count != 0) {
+        err = A + ": sliding_window, output_group_count (dividing head_count x key_length), output_lora_rank and "
+                  "q_lora_rank must be above 0";
+        return false;
+    }
+    if (s.hash_layer_count != 0) {
+        err = A + ".hash_layer_count " + std::to_string(s.hash_layer_count) + ": hash-routed layers are not supported";
+        return false;
+    }
+
+    // compress ratios, and the source of each compressed layer's KV and top-k (deepseek41.cpp)
+    std::vector<uint64_t> ratios, kv_src, idx_src;
+    spec_uarr(g, A, "attention.compress_ratios", ratios);
+    spec_uarr(g, A, "attention.kv_source_layers", kv_src);
+    spec_uarr(g, A, "attention.indexer.source_layers", idx_src);
+    const int64_t n = s.n_layer;
+    if ((int64_t) ratios.size() < n) {
+        err = A + ".attention.compress_ratios is shorter than block_count";
+        return false;
+    }
+    auto has = [](const std::vector<uint64_t>& v, int64_t x) { return std::find(v.begin(), v.end(), (uint64_t) x) != v.end(); };
+    for (uint64_t x : kv_src) if ((int64_t) x >= n) { err = A + ": kv source layer out of range"; return false; }
+    for (uint64_t x : idx_src) if ((int64_t) x >= n) { err = A + ": index source layer out of range"; return false; }
+    s.compress_ratios.assign(ratios.begin(), ratios.begin() + n);
+    s.kv_src.assign((size_t) n, -1);
+    s.topk_src.assign((size_t) n, -1);
+    int64_t last_kv = -1, last_idx = -1;
+    for (int64_t l = 0; l < n; ++l) {
+        const int64_t r = s.compress_ratios[(size_t) l];
+        const bool is_kv = has(kv_src, l), is_idx = has(idx_src, l);
+        if ((is_kv || is_idx) && r == 0) {
+            err = A + ": source layer " + std::to_string(l) + " has compress ratio 0";
+            return false;
+        }
+        if (is_kv) last_kv = l;
+        if (is_idx) last_idx = l;
+        if (r == 0) continue;
+        if (r > 2 || last_kv < 0 || last_idx < last_kv || s.compress_ratios[(size_t) last_kv] != r ||
+            s.compress_ratios[(size_t) last_idx] != r) {
+            err = A + ": layer " + std::to_string(l) + ": ratio " + std::to_string(r) + " without a matching kv/index source";
+            return false;
+        }
+        s.kv_src[(size_t) l] = last_kv;
+        s.topk_src[(size_t) l] = last_idx;
+    }
+    s.cand_src = spec_get(g, A, "attention.indexer.candidate_source_layer")
+                     ? spec_int(g, A, "attention.indexer.candidate_source_layer") : -1;
+    if (s.cand_src >= 0) {
+        s.cand_topk_blocks = spec_int(g, A, "attention.indexer.candidate_top_k_blocks");
+        s.cand_block_size = spec_int(g, A, "attention.indexer.candidate_block_size");
+        const int64_t c = s.cand_src;
+        if (c >= n || s.topk_src[(size_t) c] != c || s.cand_block_size <= 0 || s.cand_topk_blocks <= 0) {
+            err = A + ": invalid candidate selection (source must be an index source, block size and top-k blocks > 0)";
+            return false;
+        }
+        for (int64_t l = c + 1; l < n; ++l)
+            if (s.topk_src[(size_t) l] == l && s.compress_ratios[(size_t) l] != s.compress_ratios[(size_t) c]) {
+                err = A + ": candidate consumers must share the source's compress ratio";
+                return false;
+            }
+    }
+
+    // Engram: the PLE n-gram hash with one set of constants per Engram layer
+    std::vector<uint64_t> layers;
+    if (spec_uarr(g, A, "ple.layers", layers) && !layers.empty()) {
+        s.engram_ngram = spec_int(g, A, "ple.ngram_size");
+        s.engram_heads_per_ngram = spec_int(g, A, "ple.heads_per_ngram");
+        s.engram_head_dim = spec_int(g, A, "embedding_length_per_layer_input");
+        s.engram_pad_id = spec_int(g, A, "engram.pad_token_id");
+        spec_uarr(g, A, "ple.layer_multipliers", s.engram_multipliers);
+        spec_uarr(g, A, "ple.head_offsets", s.engram_offsets);
+        spec_uarr(g, A, "ple.head_vocab_sizes", s.engram_vocab);
+        std::vector<uint64_t> map;
+        spec_uarr(g, A, "engram.token_map", map);
+        const size_t ne = layers.size();
+        s.engram_n_heads = s.engram_ngram >= 2 ? (s.engram_ngram - 1) * s.engram_heads_per_ngram : 0;
+        const size_t nc = (size_t) s.engram_n_heads;
+        if (nc == 0 || s.engram_head_dim <= 0 || s.engram_multipliers.size() != ne * (size_t) s.engram_ngram ||
+            s.engram_vocab.size() != ne * nc || s.engram_offsets.size() != ne * nc || s.engram_pad_id < 0 ||
+            (size_t) s.engram_pad_id >= map.size()) {
+            err = A + ": the Engram metadata is inconsistent";
+            return false;
+        }
+        for (size_t e = 0; e < ne; ++e) {
+            if ((int64_t) layers[e] >= n || (e > 0 && layers[e] <= layers[e - 1])) {
+                err = A + ": Engram layer " + std::to_string(layers[e]) + " is out of range or out of order";
+                return false;
+            }
+            s.engram_layers.push_back((int64_t) layers[e]);
+        }
+        for (size_t c = 0; c < ne * nc; ++c)
+            if (s.engram_vocab[c] < 2 || s.engram_offsets[c] + s.engram_vocab[c] > (uint64_t) INT32_MAX) {
+                err = A + ": Engram head " + std::to_string(c) + ": bucket range out of range";
+                return false;
+            }
+        s.engram_token_map.reserve(map.size());
+        for (uint64_t t : map) s.engram_token_map.push_back((int32_t) (uint32_t) t);
+    }
+    return true;
+}
+
 /// Reads the shape of the model `g` holds (its first shard, which carries the metadata).  Returns false with a
 /// reason naming the key or value at fault.
 inline bool read_model_spec(const GgufFile& g, ModelSpec& s, std::string& err) {
@@ -142,7 +313,11 @@ inline bool read_model_spec(const GgufFile& g, ModelSpec& s, std::string& err) {
     else if (A == "qwen35") s.arch = ModelArch::Qwen35;
     else if (A == "qwen3moe") s.arch = ModelArch::Qwen3Moe;
     else if (A == "glm5-next" || A == "glm5next") s.arch = ModelArch::Glm5Next;
-    else { err = "architecture '" + A + "' is not supported (qwen4exp, qwen35moe, qwen35, qwen3moe, glm5-next)"; return false; }
+    else if (A == "deepseek41") s.arch = ModelArch::DeepSeek41;
+    else {
+        err = "architecture '" + A + "' is not supported (qwen4exp, qwen35moe, qwen35, qwen3moe, glm5-next, deepseek41)";
+        return false;
+    }
 
     // the keys every architecture here needs; the experts' all but the dense qwen35
     const bool dense = s.arch == ModelArch::Qwen35;
@@ -222,6 +397,7 @@ inline bool read_model_spec(const GgufFile& g, ModelSpec& s, std::string& err) {
         for (int64_t i = 0; i < s.n_layer; ++i) s.recurrent[(size_t) i] = s.n_head_kv[(size_t) i] == 0;
         break;
     case ModelArch::Qwen3Moe:
+    case ModelArch::DeepSeek41:
         break;
     }
 
@@ -235,7 +411,13 @@ inline bool read_model_spec(const GgufFile& g, ModelSpec& s, std::string& err) {
     s.gating = (ExpertGating) spec_int(g, A, "expert_gating_func");
     if (s.gating == ExpertGating::None)   // llama.cpp's defaults: GLM-5.3-Flash sigmoid, the Qwens softmax
         s.gating = s.arch == ModelArch::Glm5Next ? ExpertGating::Sigmoid : ExpertGating::Softmax;
-    if (s.gating != ExpertGating::Softmax && s.gating != ExpertGating::Sigmoid) {
+    // deepseek4.cpp: DeepSeek-V4 scores its experts by sqrt(softplus(logit)) and nothing else
+    if (s.arch == ModelArch::DeepSeek41 && s.gating != ExpertGating::SqrtSoftplus) {
+        err = A + ".expert_gating_func " + std::to_string((uint32_t) s.gating) + ": DeepSeek-V4.1 needs 4 (sqrtsoftplus)";
+        return false;
+    }
+    if (s.gating != ExpertGating::Softmax && s.gating != ExpertGating::Sigmoid &&
+        !(s.arch == ModelArch::DeepSeek41 && s.gating == ExpertGating::SqrtSoftplus)) {
         err = A + ".expert_gating_func " + std::to_string((uint32_t) s.gating) + " is not supported";
         return false;
     }
@@ -274,6 +456,8 @@ inline bool read_model_spec(const GgufFile& g, ModelSpec& s, std::string& err) {
     s.idx_kpool = spec_int(g, A, "attention.indexer.kpool");
     // llama.cpp's default where the file has no such key (llama-hparams.h): GLM-5.3-Flash's GGUF writes none
     s.idx_kpool_select_tail = spec_int(g, A, "attention.indexer.kpool_select_tail", 1) != 0;
+
+    if (s.arch == ModelArch::DeepSeek41 && !read_deepseek41(g, s, err)) return false;
 
     if (s.arch == ModelArch::Glm5Next) {
         // glm5-next.cpp asserts these: an mHC of 4 streams and a pool size that divides the indexer's budget
