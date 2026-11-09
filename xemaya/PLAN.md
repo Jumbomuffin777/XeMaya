@@ -47,17 +47,18 @@ oneAPI. intel/llvm DPC++ 7+ still works.
 | # | Milestone | State |
 |---|---|---|
 | 1 | Foundation: repo, history, licences, icpx build, CPU-device kernel testing | done |
-| 2 | Upstream Strata v0.2.8 -> v0.2.12: `serve/` correctness (tool calls, request lifecycle, Anthropic route) | in progress |
-| 3 | Native GLM-5.3-Flash: Maya-S v2 (IQ2_XXS) on the Arc cards, output checked against llama.cpp | blocked on GPU access (see STATUS) |
-| 4 | Native DeepSeek-V4.1-Flash: PlainModel `deepseek41` block, SYCL kernels with CPU-device parity tests | started (model spec) |
+| 2 | Upstream Strata v0.2.8 -> v0.2.12: `serve/` correctness (tool calls, request lifecycle, Anthropic route) | tool calls done; lifecycle pending |
+| 3 | Native GLM-5.3-Flash: Maya-S v2 (IQ2_XXS) on the Arc cards, output checked against llama.cpp | ready; blocked on GPU access (see STATUS) |
+| 4 | Native DeepSeek-V4.1-Flash: PlainModel `deepseek41` block, SYCL kernels with CPU-device parity tests | spec, manifest, kernels done; block next |
 | 5 | Performance and reliability: decode/prefill, expert residency, PCIe, multi-GPU scheduling, API soak | not started |
 
 ### Milestone 3: GLM-5.3-Flash
 
 1. Done: the kernels pass `glm5_parity` with icpx. The engine builds. Maya-S v2 uses only types XeStrata has SYCL and CPU
    kernels for (Q6_K, Q8_0, IQ2_XXS, IQ2_S, IQ3_XXS, F32) under arch `glm5-next`.
-2. Model: Maya-S v2 IQ2_XXS (89.8 GiB) is being downloaded to
-   `/mnt/ai/models/peasantsmith/GLM-5.3-Flash-Maya-GGUF/Maya-S-v2-IQ2_XXS/` (sha256-checked).
+2. Model: Maya-S v2 IQ2_XXS (89.8 GiB) in `/mnt/ai/models/peasantsmith/GLM-5.3-Flash-Maya-GGUF/Maya-S-v2-IQ2_XXS/`
+   (sha256-checked download). `setup.py --family glm53` lists Maya-S-v2/S24/XS/M/L, pinned. Its MTP layer is present,
+   so XeStrata can draft with it.
 3. Needs GPU (approval): load on B70+B65+B60, then a greedy 16-token check against llama.cpp SYCL on the same file. The
    historical reference is 68.3 / 13.6 tok/s on stock llama.cpp v0.8.0.
 4. Then the serve path: OpenAI and Anthropic routes, tool calls, streaming.
@@ -69,16 +70,50 @@ types are Q8_0, Q5_K, BF16, IQ1_M, IQ2_XXS and F32.
 
 Steps (each with a CPU-device parity test against a host reference transcribed from llama.cpp):
 
-1. Done: `deepseek41` model spec with llama.cpp's checks (compress ratios, KV/top-k sources, candidate blocks, Engram).
-2. Kernels, in `src/kernels/xe/ds41.cpp` + `ds41_parity`: sqrt-softplus router with bias; the KV compressor (ratio 1/2,
-   gated); the lightning indexer and candidate blocks; MQA with attention sinks over window + selected compressed rows;
-   grouped low-rank output; YaRN RoPE on 64 of 512 dims, plus the compressed RoPE base. Reuse `glm5` mHC and
-   `swiglu_clamp`.
-3. Engram: the n-gram hash (llama.cpp `engram_index` / qwen4exp PLE) on the PLE reader (`src/ngram`), streamed from
-   the 110 GB IQ4_NL table by direct I/O.
-4. `plain_deepseek41.cpp`: the block in PlainModel, decode first, then prompt chunks.
-5. CPU expert lane: IQ1_M is missing from `src/kernels/cpu/native_expert.cpp`.
-6. GPU validation (approval): greedy tokens against llama.cpp-ds41 SYCL on the same file.
+1. Done: the `deepseek41` model spec with llama.cpp's checks (compress ratios, KV/top-k sources, candidate blocks,
+   Engram), in `include/strata/artifact/model_spec.hpp`.
+2. Done: the tensor manifest and its check (`include/strata/artifact/ds41_manifest.hpp`). Both real models pass.
+3. Done: the kernels (`include/strata/kernels/ds41.hpp`, `src/kernels/xe/ds41.cpp`, `ds41_parity` 18/18).
+4. Next: `src/core/plain_ds41.cpp`, the block in PlainModel, built like `plain_glm5.cpp` (design below).
+5. Engram table: 110 GB IQ4_NL, read by row through the PLE reader (`src/ngram`, direct I/O), dequantised on the host.
+   CPU expert lane: ggml's `vec_dot` covers IQ1_M and IQ2_XXS already (`native_expert.cpp` dispatches by type traits).
+6. GPU validation (approval): greedy tokens against llama.cpp-ds41 SYCL on the same file, then serve with DSML tool
+   calls (upstream `serve/dsml.py`, not yet ported) and the DeepSeek chat template (`serve/fixtures/deepseek41`).
+
+#### Block design (plain_ds41.cpp)
+
+Per layer `l`, for a window of T rows at positions `pos` (device `steps` as GLM's):
+
+```
+x [T][4][N]: the mHC streams.  Before layer 0: glm5_hc_init(embedding).
+if engram(l):  rows = table rows of ds41_engram_hash (host, per token) -> engram_kv proj -> ds41_engram_gate(x)
+mix_a = hc_attn_fn . x  (F32 GEMV; glm5_hc_pre gives post_a, comb_a; its y is not used)
+cur = (l == 0) ? x[:,0] : ds41_hc_collapse(x, pre_prev);  rms_norm(attn_norm)
+attn(cur):
+  qr = rmsnorm(q_a . cur, q_a_norm); q = q_b . qr [T][64][512]; ds41_rope(q, base/YaRN of the layer, offset 448)
+  kv = rmsnorm(kv . cur, kv_a_norm); ds41_rope(kv) -> raw ring [W + max_t][512] at pos % ring
+  if ratio(l) and kv_src(l) == l:   compressor state rows (kv, gate projections) per position; when a block of
+      `ratio` positions completes: ds41_compress -> comp latent; ik = rmsnorm(indexer.attn_k . comp); rope both at the
+      block's first position (compressed base) -> comp cache row [comp_idx][512 + 128]
+  if ratio(l):
+      if topk_src(l) == l:  iq = indexer.attn_q_b . qr, rope; iw = indexer.proj . cur / sqrt(128 x 32)
+          ds41_idx_scores -> (cand_src == l: ds41_block_max + ds41_topk(2048) = candidate blocks)
+                           -> (cand_src < l: ds41_keep_blocks) -> ds41_topk(512) -> ids of layer l
+      ds41_sink_attn(q, raw ring, window 128, comp cache of kv_src(l), ids of topk_src(l), sinks)
+  else: ds41_sink_attn over the window only
+  out: ds41_rope(inverse) on the output, then 8 grouped GEMVs wo_a[g] (4096 -> 1024), then wo_b (8192 -> 5120)
+x = glm5_hc_post(attn_out, x, post_a, comb_a)
+mix_f = hc_ffn_fn . x (glm5_hc_pre: post_f, comb_f; ds41_hc_pre_weights -> pre_f);  cur = ds41_hc_collapse(x, pre_a)
+rms_norm(ffn_norm); logits = gate_inp . cur (F32); ds41_router (k 6, scale 1.5, norm); routed experts (the tiers, as
+GLM's record_moe, router swapped) + shared expert (glm5_swiglu_clamp, limit 10); x = glm5_hc_post(ffn, x, post_f, comb_f)
+pre_prev = pre_f
+```
+
+Head: `ds41_hc_collapse(x, pre_prev)`, rms_norm(output_norm), output. Per-sequence state: the raw ring per layer, the
+compressor state per KV-source layer (`ratio` rows of kv and gate), the compressed cache per KV-source layer
+(`max_cells / ratio` rows of 640 floats, FP16 later), and the last top-k ids per index-source layer within a window.
+Graph recording follows GLM: positions, visible counts and block-completion flags live in device buffers the host
+fills before each replay, so one graph per window size serves every step.
 
 ### Milestone 2: upstream serve fixes
 

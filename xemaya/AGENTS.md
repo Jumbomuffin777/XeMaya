@@ -53,7 +53,13 @@ Kernel tests without a GPU: `ONEAPI_DEVICE_SELECTOR=opencl:cpu XEMAYA_CPU_DEVICE
 every GPU from SYCL, so nothing touches the leased cards. Tests that register host memory for device copies
 (`elementwise_parity`) need Level Zero and run only on a GPU.
 
-Serve tests: `venv/bin/python -m pytest -q -p no:cacheprovider serve` (baseline 862 passed, 23 skipped).
+The same for DeepSeek: `ONEAPI_DEVICE_SELECTOR=opencl:cpu XEMAYA_CPU_DEVICE=1 build-icpx/ds41_parity`. A real
+model's tensors: `build-icpx/ds41_manifest_test <any shard>`.
+
+Serve tests: `venv/bin/python -m pytest -q -p no:cacheprovider serve` (930 passed, 23 skipped after the ports).
+Porting an upstream serve commit: `python3 /DATA/Projects/xemaya/conf.py show <commit>` prints its conflict hunks,
+`resolve <spec.json>` applies per-hunk choices (`ours`, `theirs`, `both`, or `{"text": ...}`), and `finish <commit>
+[tests]` runs the commit's tests plus the listed ones and commits only if they pass.
 
 Model headers without downloading: `tools/xemaya/gguf_inspect.py hf:OWNER/REPO/PATH.gguf`.
 Model shape as the engine reads it: `build-icpx/model_spec_test FILE.gguf`.

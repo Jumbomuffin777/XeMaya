@@ -1,45 +1,63 @@
 # XeMaya status
 
-Updated 2026-11-09 (first session). Branch `xemaya/main`; private remote https://github.com/Jumbomuffin777/XeMaya.
+Updated 2026-11-09 06:30 UTC (end of the first session). Branch `xemaya/main` = `origin/main` of the private
+https://github.com/Jumbomuffin777/XeMaya. Every item below was run on Zability unless marked otherwise.
 
 ## Works (checked)
 
 | What | How it was checked |
 |---|---|
-| Builds with oneAPI icpx 2026.2 | core, host tests, parity binaries (104 steps) and the full `strata` engine with GLM (177 steps), 0 errors |
-| Host tests | 13 pass: gguf_split, gguf_reader, model_spec, share_rules, ple_reader, suffix_drafter, controller, draft_policy, conv_cache, split_rules, batch_groups, conversation_cache, logit_bias |
-| GLM-5.3-Flash kernels | `glm5_parity` PASS, 28/28 (mHC, Sinkhorn, router, KDA, indexer, MLA, IQ1_S, clamped SwiGLU), on the OpenCL **CPU** device |
-| DeepSeek-V4.1 model spec | `model_spec_test` PASS; reads ISTA-DASLab's GSQ-RCO and Coder IQ2_XXS files (40 layers, 38 compressed, 2 Engram modules) |
-| Maya GLM GGUF compatibility (header level) | Maya-S v2 IQ2_XXS is arch `glm5-next` with types Q6_K, Q8_0, IQ2_XXS, IQ2_S, IQ3_XXS, F32, all supported |
-| Serve suite baseline | 862 passed, 23 skipped, 0 failed |
+| Builds with oneAPI icpx 2026.2 | Core, tests and parity binaries, plus the full `strata` engine (GLM and DeepSeek kernels included), with 0 errors |
+| Host tests | 13 XeStrata host tests pass, plus `model_spec_test` and `ds41_manifest_test` |
+| GLM-5.3-Flash kernels | `glm5_parity` PASS, 28/28, on the OpenCL **CPU** device |
+| GLM Maya GGUFs | Maya-S v2 IQ2_XXS reads as `glm5-next` (45 trunk + 1 MTP layers, 42 MoE layers, 34 KDA layers); all its tensor types are supported; `setup.py` lists Maya-S-v2/S24/XS/M/L, pinned with sha256 |
+| DeepSeek-V4.1 model spec | `model_spec_test` reads the ISTA-DASLab GSQ-RCO and Coder IQ2_XXS files (40 layers, 38 compressed, 2 Engram modules, 384 / 192 experts) |
+| DeepSeek-V4.1 tensors | `ds41_manifest_test` passes both real models: 6 shards, all 1043 tensors with llama.cpp's shapes, in bounds, no unknown tensor |
+| DeepSeek-V4.1 kernels | `ds41_parity` PASS, 18/18, on the CPU device: router, mHC pre/collapse, compressor, Engram gate + hash, YaRN RoPE (and its inverse), indexer, top-k, candidate blocks, sink attention |
+| Serve layer | 14 upstream Strata tool-call commits ported (#4663, #4701, #4702/#4703, #4751, #5040, #5276, #5281, #5409, tool_choice required, Anthropic tool-result order). Full suite: **930 passed, 23 skipped, 0 failed** (baseline was 862) |
 
-## Unverified (built but not run on Intel Arc)
+## Unverified (built, not run on an Arc GPU)
 
-- Every SYCL kernel compiled with icpx has been run on the CPU device only. XMX paths are not exercised there.
-- The `strata` engine has not loaded a model (no GPU access; see below).
+- Every SYCL kernel has only run on the CPU device, which exercises no XMX paths and no Level Zero features.
+- The `strata` engine has not loaded a model (GPU access is blocked; see below).
 - `elementwise_parity` needs Level Zero host-memory registration and was not run.
+- The DeepSeek kernels are written for correctness, not speed.
 
-## In progress
+## In progress or not started
 
-- GLM Maya-S v2 IQ2_XXS download (sha256-checked, 50 MB/s cap): log `/DATA/Projects/xemaya/logs/fetch-glm-maya-s-v2.log`.
-  Re-run `tools/xemaya/fetch_hf.sh peasantsmith/GLM-5.3-Flash-Maya-GGUF Maya-S-v2-IQ2_XXS
-  /mnt/ai/models/peasantsmith/GLM-5.3-Flash-Maya-GGUF/Maya-S-v2-IQ2_XXS 50M` to resume it.
-- Strata v0.2.8..v0.2.12 `serve/` ports (PLAN, Milestone 2).
+- **GLM Maya-S v2 download:** shard 1 is verified, shard 2 is downloading (log
+  `/DATA/Projects/xemaya/logs/fetch-glm-maya-s-v2.log`). Resume with
+  `tools/xemaya/fetch_hf.sh peasantsmith/GLM-5.3-Flash-Maya-GGUF Maya-S-v2-IQ2_XXS
+  /mnt/ai/models/peasantsmith/GLM-5.3-Flash-Maya-GGUF/Maya-S-v2-IQ2_XXS 50M`. Verified files are skipped.
+- **The DeepSeek-V4.1 block in PlainModel:** see PLAN, Milestone 4, for the design. Not started.
+- **Remaining upstream serve commits:** these conflict with XeStrata's rewritten `server.py` and need hand ports: request
+  lifecycle (#4271, #4479, #4738, #4792, #5044, #3443, #3961, #2518, #4451), answers one request late (9aea047ee,
+  engine side too), fatal GPU error restart (#4350, engine side too), Anthropic context-overflow wording (247397800),
+  `undeclared_tool_calls` (75acfca32), deferred tool loading (9efac55f5). The runner `/DATA/Projects/xemaya/conf.py`
+  shows a commit's conflicts and records resolutions.
+- **`setup.py` still refuses icpx** and builds its own engine with intel/llvm. Until that changes, run the engine built
+  by CMake (AGENTS.md) or build intel/llvm with `tools/intel_llvm_build.py` (heavy; capped jobs only).
 
 ## Needs the owner's approval (not done)
 
-1. **A GPU partition owner for XeMaya.** Production Strata holds the whole-host lease; `gpu_partitions.py` lets only
-   `comfyui` and `marrow-qa` claim the B60 meanwhile. Proposed: add `'xemaya-dev': B60` to `OWNERS` and allow it beside
-   the isolated Strata unit, as `comfyui` is (`claim()`'s `legacy_strata_is_isolated` branch). Impact: XeMaya tests use
-   only the B60 (24 GB), so ComfyUI and marrow-qa cannot use it at the same time. The lease and memory guard stay
-   in force. Rollback: remove the line.
-   Even then, GLM Maya-S v2 (89.8 GiB) does not fit one B60 plus the ~50 GB of free host RAM, so a full GLM or
-   DeepSeek run needs the B70+B65 in a **maintenance window** with production Qwen stopped by the owner.
-   Rollback: restart `zability-strata-qwen38.service`.
-2. **Moving the working tree**: done by the owner on 2026-11-09 (`/DATA/Projects/xemaya` now writable).
+1. **GPU access for XeMaya tests.** Production Strata holds the whole-host lease, and `gpu_partitions.py` only lets
+   `comfyui` and `marrow-qa` claim the B60 meanwhile. Two options:
+   - (a) Add `'xemaya-dev': B60` to `OWNERS` and allow it beside the isolated Strata unit, as `comfyui` is
+     (`claim()`'s `legacy_strata_is_isolated` branch). Impact: XeMaya uses only the B60 (24 GB), so ComfyUI and
+     marrow-qa cannot use it at the same time. Leases and the memory guard stay in force. Rollback: remove the entry.
+     This is enough for kernel parity on real Xe2 hardware (`glm5_parity`, `ds41_parity`, `elementwise_parity`,
+     everything that hits XMX). It is **not** enough for a full model: GLM Maya-S v2 is 89.8 GiB and ~50 GB of host
+     RAM is free.
+   - (b) A **maintenance window**: you stop `zability-strata-qwen38.service`, XeMaya runs GLM Maya-S v2 across the B70,
+     B65 and B60 under the lease (`gpulease.py run --holder <name>` + `preflight.sh`), then you restart the service.
+     Impact: production Qwen and the Hermes agents are down for the window (about 30 minutes for the first load, a
+     16-token correctness check against llama.cpp SYCL on the same file, and a short benchmark). Rollback: start the
+     service again.
+2. Nothing else is pending. The `/DATA/Projects/xemaya` permission fix was done by the owner on 2026-11-09.
 
-## Blockers and notes
+## Notes
 
-- `gh` on the Windows PC is not logged in; `gh` on Zability is (Jumbomuffin777) and is used instead.
-- No passwordless sudo on Zability.
-- Upstream history includes a 68 MB `src2.tar` (GitHub warns, the push succeeds). History is not rewritten.
+- `gh` on the Windows PC is not logged in. `gh` on Zability is (Jumbomuffin777) and is what this work used.
+- There is no passwordless sudo on Zability.
+- Upstream history includes a 68 MB `src2.tar`. GitHub warns but the push succeeds; history is not rewritten.
+- Commit identity is repo-local: `Jumbomuffin777 <ID+Jumbomuffin777@users.noreply.github.com>`.
