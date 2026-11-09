@@ -1,0 +1,547 @@
+{
+ "model": "GLM-5.3-Flash-Maya-S-v2-IQ2_XXS (peasantsmith/GLM-5.3-Flash-Maya-GGUF a1c2a554, sha256-checked)",
+ "reference": "llama.cpp v0.8.0 (8642541b2), CPU backend only (GGML_SYCL=OFF), greedy (top_k 1, temperature 0)",
+ "prompt_text": "The three most important ideas in the theory of evolution are",
+ "prompt_ids": [
+  785,
+  2326,
+  1429,
+  2989,
+  6708,
+  304,
+  279,
+  10121,
+  315,
+  15367,
+  525
+ ],
+ "tokens": [
+  5810,
+  6589,
+  11,
+  18895,
+  22929,
+  11,
+  323,
+  32927,
+  382,
+  69249,
+  1447,
+  785,
+  2326,
+  1429,
+  2989,
+  6708
+ ],
+ "text": " natural selection, genetic variation, and adaptation.\n\nExplanation:\n\nThe three most important ideas",
+ "steps": [
+  {
+   "token": 5810,
+   "text": " natural",
+   "top5": [
+    {
+     "id": 5810,
+     "text": " natural",
+     "logprob": -0.8663123250007629
+    },
+    {
+     "id": 25,
+     "text": ":",
+     "logprob": -1.9691146612167358
+    },
+    {
+     "id": 1447,
+     "text": ":\n\n",
+     "logprob": -2.1950972080230713
+    },
+    {
+     "id": 429,
+     "text": " that",
+     "logprob": -2.7448809146881104
+    },
+    {
+     "id": 279,
+     "text": " the",
+     "logprob": -3.425661325454712
+    }
+   ]
+  },
+  {
+   "token": 6589,
+   "text": " selection",
+   "top5": [
+    {
+     "id": 6589,
+     "text": " selection",
+     "logprob": -0.003933646250516176
+    },
+    {
+     "id": 22929,
+     "text": " variation",
+     "logprob": -7.242796897888184
+    },
+    {
+     "id": 198,
+     "text": "\n",
+     "logprob": -7.438101291656494
+    },
+    {
+     "id": 11,
+     "text": ",",
+     "logprob": -8.227181434631348
+    },
+    {
+     "id": 323,
+     "text": " and",
+     "logprob": -8.442230224609375
+    }
+   ]
+  },
+  {
+   "token": 11,
+   "text": ",",
+   "top5": [
+    {
+     "id": 11,
+     "text": ",",
+     "logprob": -0.034214429557323456
+    },
+    {
+     "id": 320,
+     "text": " (",
+     "logprob": -4.112986087799072
+    },
+    {
+     "id": 438,
+     "text": " as",
+     "logprob": -5.097851276397705
+    },
+    {
+     "id": 323,
+     "text": " and",
+     "logprob": -5.88579797744751
+    },
+    {
+     "id": 13,
+     "text": ".",
+     "logprob": -7.056088924407959
+    }
+   ]
+  },
+  {
+   "token": 18895,
+   "text": " genetic",
+   "top5": [
+    {
+     "id": 18895,
+     "text": " genetic",
+     "logprob": -1.5519520044326782
+    },
+    {
+     "id": 4185,
+     "text": " common",
+     "logprob": -1.5637718439102173
+    },
+    {
+     "id": 36760,
+     "text": " descent",
+     "logprob": -1.8680835962295532
+    },
+    {
+     "id": 32927,
+     "text": " adaptation",
+     "logprob": -1.964349389076233
+    },
+    {
+     "id": 22929,
+     "text": " variation",
+     "logprob": -2.387946844100952
+    }
+   ]
+  },
+  {
+   "token": 22929,
+   "text": " variation",
+   "top5": [
+    {
+     "id": 22929,
+     "text": " variation",
+     "logprob": -0.04911327734589577
+    },
+    {
+     "id": 33476,
+     "text": " drift",
+     "logprob": -4.267395973205566
+    },
+    {
+     "id": 26290,
+     "text": " mutation",
+     "logprob": -4.306618690490723
+    },
+    {
+     "id": 41586,
+     "text": " inheritance",
+     "logprob": -4.74558162689209
+    },
+    {
+     "id": 19455,
+     "text": " diversity",
+     "logprob": -5.571053504943848
+    }
+   ]
+  },
+  {
+   "token": 11,
+   "text": ",",
+   "top5": [
+    {
+     "id": 11,
+     "text": ",",
+     "logprob": -0.04550260677933693
+    },
+    {
+     "id": 323,
+     "text": " and",
+     "logprob": -3.305485486984253
+    },
+    {
+     "id": 2878,
+     "text": " within",
+     "logprob": -6.21835994720459
+    },
+    {
+     "id": 320,
+     "text": " (",
+     "logprob": -7.116266250610352
+    },
+    {
+     "id": 14,
+     "text": "/",
+     "logprob": -7.358389854431152
+    }
+   ]
+  },
+  {
+   "token": 323,
+   "text": " and",
+   "top5": [
+    {
+     "id": 323,
+     "text": " and",
+     "logprob": -0.004316393285989761
+    },
+    {
+     "id": 4185,
+     "text": " common",
+     "logprob": -6.599054336547852
+    },
+    {
+     "id": 32927,
+     "text": " adaptation",
+     "logprob": -6.627113342285156
+    },
+    {
+     "id": 36760,
+     "text": " descent",
+     "logprob": -8.267171859741211
+    },
+    {
+     "id": 41586,
+     "text": " inheritance",
+     "logprob": -8.900246620178223
+    }
+   ]
+  },
+  {
+   "token": 32927,
+   "text": " adaptation",
+   "top5": [
+    {
+     "id": 32927,
+     "text": " adaptation",
+     "logprob": -0.8997049927711487
+    },
+    {
+     "id": 4185,
+     "text": " common",
+     "logprob": -1.202651023864746
+    },
+    {
+     "id": 279,
+     "text": " the",
+     "logprob": -1.953818440437317
+    },
+    {
+     "id": 36760,
+     "text": " descent",
+     "logprob": -2.735018730163574
+    },
+    {
+     "id": 1398,
+     "text": " spec",
+     "logprob": -3.760928153991699
+    }
+   ]
+  },
+  {
+   "token": 382,
+   "text": ".\n\n",
+   "top5": [
+    {
+     "id": 382,
+     "text": ".\n\n",
+     "logprob": -0.6287338137626648
+    },
+    {
+     "id": 13,
+     "text": ".",
+     "logprob": -0.8703853487968445
+    },
+    {
+     "id": 11,
+     "text": ",",
+     "logprob": -4.272585868835449
+    },
+    {
+     "id": 311,
+     "text": " to",
+     "logprob": -4.883404731750488
+    },
+    {
+     "id": 624,
+     "text": ".\n",
+     "logprob": -5.995067596435547
+    }
+   ]
+  },
+  {
+   "token": 69249,
+   "text": "Explanation",
+   "top5": [
+    {
+     "id": 69249,
+     "text": "Explanation",
+     "logprob": -0.15771007537841797
+    },
+    {
+     "id": 53919,
+     "text": "Natural",
+     "logprob": -2.7587270736694336
+    },
+    {
+     "id": 785,
+     "text": "The",
+     "logprob": -3.7835569381713867
+    },
+    {
+     "id": 8303,
+     "text": "Step",
+     "logprob": -3.9762678146362305
+    },
+    {
+     "id": 16,
+     "text": "1",
+     "logprob": -5.334467887878418
+    }
+   ]
+  },
+  {
+   "token": 1447,
+   "text": ":\n\n",
+   "top5": [
+    {
+     "id": 1447,
+     "text": ":\n\n",
+     "logprob": -0.31144019961357117
+    },
+    {
+     "id": 271,
+     "text": "\n\n",
+     "logprob": -1.3467680215835571
+    },
+    {
+     "id": 25,
+     "text": ":",
+     "logprob": -5.145960330963135
+    },
+    {
+     "id": 510,
+     "text": ":\n",
+     "logprob": -6.677601337432861
+    },
+    {
+     "id": 315,
+     "text": " of",
+     "logprob": -9.070208549499512
+    }
+   ]
+  },
+  {
+   "token": 785,
+   "text": "The",
+   "top5": [
+    {
+     "id": 785,
+     "text": "The",
+     "logprob": -0.3037658631801605
+    },
+    {
+     "id": 19604,
+     "text": "Three",
+     "logprob": -2.0413148403167725
+    },
+    {
+     "id": 53919,
+     "text": "Natural",
+     "logprob": -3.1161398887634277
+    },
+    {
+     "id": 641,
+     "text": "In",
+     "logprob": -3.2077383995056152
+    },
+    {
+     "id": 33947,
+     "text": "Ev",
+     "logprob": -4.303956508636475
+    }
+   ]
+  },
+  {
+   "token": 2326,
+   "text": " three",
+   "top5": [
+    {
+     "id": 2326,
+     "text": " three",
+     "logprob": -0.1738494634628296
+    },
+    {
+     "id": 10121,
+     "text": " theory",
+     "logprob": -2.337251901626587
+    },
+    {
+     "id": 14503,
+     "text": " Three",
+     "logprob": -3.0738472938537598
+    },
+    {
+     "id": 30318,
+     "text": " Theory",
+     "logprob": -4.844265460968018
+    },
+    {
+     "id": 1429,
+     "text": " most",
+     "logprob": -5.887657642364502
+    }
+   ]
+  },
+  {
+   "token": 1429,
+   "text": " most",
+   "top5": [
+    {
+     "id": 1429,
+     "text": " most",
+     "logprob": -0.008294194005429745
+    },
+    {
+     "id": 6708,
+     "text": " ideas",
+     "logprob": -5.544079780578613
+    },
+    {
+     "id": 1887,
+     "text": " main",
+     "logprob": -6.516737937927246
+    },
+    {
+     "id": 2989,
+     "text": " important",
+     "logprob": -6.8432207107543945
+    },
+    {
+     "id": 18906,
+     "text": " concepts",
+     "logprob": -7.787240028381348
+    }
+   ]
+  },
+  {
+   "token": 2989,
+   "text": " important",
+   "top5": [
+    {
+     "id": 2989,
+     "text": " important",
+     "logprob": -0.00015999165771063417
+    },
+    {
+     "id": 5089,
+     "text": " significant",
+     "logprob": -10.108253479003906
+    },
+    {
+     "id": 7565,
+     "text": " essential",
+     "logprob": -10.967872619628906
+    },
+    {
+     "id": 6708,
+     "text": " ideas",
+     "logprob": -11.295510292053223
+    },
+    {
+     "id": 16571,
+     "text": " crucial",
+     "logprob": -11.713807106018066
+    }
+   ]
+  },
+  {
+   "token": 6708,
+   "text": " ideas",
+   "top5": [
+    {
+     "id": 6708,
+     "text": " ideas",
+     "logprob": -0.0017083566635847092
+    },
+    {
+     "id": 2513,
+     "text": " things",
+     "logprob": -7.538419246673584
+    },
+    {
+     "id": 18906,
+     "text": " concepts",
+     "logprob": -7.72748327255249
+    },
+    {
+     "id": 323,
+     "text": " and",
+     "logprob": -9.049103736877441
+    },
+    {
+     "id": 3501,
+     "text": " points",
+     "logprob": -9.889467239379883
+    }
+   ]
+  }
+ ],
+ "timings": {
+  "cache_n": 0,
+  "prompt_n": 11,
+  "prompt_ms": 8952.41,
+  "prompt_per_token_ms": 813.8554545454546,
+  "prompt_per_second": 1.228719417452954,
+  "predicted_n": 16,
+  "predicted_ms": 10052.551,
+  "predicted_per_token_ms": 670.1700666666667,
+  "predicted_per_second": 1.4921585575641447
+ },
+ "wall_s": 19.0
+}
