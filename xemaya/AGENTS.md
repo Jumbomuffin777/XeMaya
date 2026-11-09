@@ -61,6 +61,12 @@ Porting an upstream serve commit: `python3 /DATA/Projects/xemaya/conf.py show <c
 `resolve <spec.json>` applies per-hunk choices (`ours`, `theirs`, `both`, or `{"text": ...}`), and `finish <commit>
 [tests]` runs the commit's tests plus the listed ones and commits only if they pass.
 
+GPU windows (owner-approved, production stopped by the owner): `tools/xemaya/gpu_window.sh` under
+`gpulease.py run --holder xemaya-dev` (STATUS.md has the command); it compares against a reference made beforehand on
+the CPU with `tools/xemaya/ref_cpu.sh` (llama.cpp v0.8.0 built CPU-only in `/DATA/Projects/xemaya/ref/llama.cpp-v0.8.0`)
+through `tools/xemaya/compare_ref.py`. `iq_parity` reads its fixtures from `/DATA/Projects/xemaya/iq_fixture`
+(`tools/iq_fixture.py`); on the CPU device it takes ~35 minutes.
+
 Model headers without downloading: `tools/xemaya/gguf_inspect.py hf:OWNER/REPO/PATH.gguf`.
 Model shape as the engine reads it: `build-icpx/model_spec_test FILE.gguf`.
 
