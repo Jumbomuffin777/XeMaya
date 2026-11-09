@@ -103,4 +103,29 @@ void ds41_sink_attn(const float* q, const float* raw, int64_t ring, const int32_
                     int64_t comp_stride, const int32_t* ids, const int32_t* count, int64_t id_cap, const float* sinks,
                     float scale, int n_heads, int dim, int64_t n_tokens, float* out, void* stream);
 
+// ---- the per-sequence state, in device buffers a recorded graph replays at any position (the host fills `pos`)
+
+/// The window's raw KV rows into the ring: raw[pos[t] % ring] = kv[t].  kv [T][D], raw [ring][D], ring >= T.
+void ds41_ring_store(const float* kv, const int32_t* pos, int64_t ring, int64_t dim, int64_t n_tokens, float* raw,
+                     void* stream);
+
+/// Per token: the first position of the block it would close (pos - ratio + 1, at least 0), where its compressed row
+/// stands, and how many compressed rows it sees ((pos + 1) / ratio, llama-kv-cache-dsv4.cpp).
+void ds41_block_pos(const int32_t* pos, int ratio, int32_t* block_pos, int32_t* n_visible, int64_t n_tokens,
+                    void* stream);
+
+/// The KV compressor over a window of consecutive positions (ds41_compress, one row a token): a token whose position
+/// closes a block of `ratio` ((pos + 1) % ratio == 0) gets the block's compressed, RMS-normed row, the block's earlier
+/// rows read from the window or, before it, from `state`; every other token's row is 0.  Then the state takes the
+/// rows of the block left open after the window.  v, s [T][D] (the compressor's kv and gate projections; s null for
+/// ratio 1); state [ratio - 1][2][D] (kv row, gate row of the open block's positions, in order; unused for ratio 1);
+/// out [T][D].  ratio <= 8.
+void ds41_compress_stream(const float* v, const float* s, float* state, const int32_t* pos, const float* w, float eps,
+                          int ratio, int64_t dim, int64_t n_tokens, float* out, void* stream);
+
+/// The closed blocks' rows into the compressed cache: for a token with (pos + 1) % ratio == 0, row
+/// (pos + 1) / ratio - 1 of comp [rows][D + Di] = [lat[t] | ik[t]] (a row past `rows` is not written).
+void ds41_comp_store(const float* lat, const float* ik, const int32_t* pos, int ratio, int64_t dim, int64_t idx_dim,
+                     int64_t n_tokens, float* comp, int64_t rows, void* stream);
+
 }  // namespace strata::kernels

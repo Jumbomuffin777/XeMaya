@@ -164,6 +164,76 @@ int test_compress() {
     return bad;
 }
 
+// ---- the per-sequence state: a sequence fed in windows of several sizes against the whole sequence at once
+int test_state() {
+    strata::parity::Device dev;
+    const int64_t D = 512, DI = 128, P = 37, RING = 16;
+    const int windows[] = {1, 1, 4, 3, 1, 6, 2, 5, 1, 8, 5};   // 37 positions
+    int bad = 0;
+    for (int ratio : {2, 1, 3}) {
+        auto v = randn((size_t) P * D), s = randn((size_t) P * D, 2.0f), w = randn(D, 0.3f), ik = randn((size_t) P * DI);
+        const int64_t rows = P / ratio, stride = D + DI;
+        // the whole sequence: block b = positions b ratio .. b ratio + ratio - 1 (ds41_compress's arithmetic)
+        std::vector<double> want((size_t) (rows * stride), 0.0);
+        for (int64_t b = 0; b < rows; ++b) {
+            std::vector<double> c(D);
+            double ss = 0;
+            for (int64_t d = 0; d < D; ++d) {
+                if (ratio == 1) c[d] = v[(size_t) (b * D + d)];
+                else {
+                    double m = -HUGE_VAL, sum = 0, acc = 0;
+                    for (int j = 0; j < ratio; ++j) m = std::max(m, (double) s[(size_t) ((b * ratio + j) * D + d)]);
+                    for (int j = 0; j < ratio; ++j) {
+                        const double e = std::exp(s[(size_t) ((b * ratio + j) * D + d)] - m);
+                        sum += e;
+                        acc += e * v[(size_t) ((b * ratio + j) * D + d)];
+                    }
+                    c[d] = acc / sum;
+                }
+                ss += c[d] * c[d];
+            }
+            const double inv = 1.0 / std::sqrt(ss / (double) D + 1e-20);
+            for (int64_t d = 0; d < D; ++d) want[(size_t) (b * stride + d)] = c[d] * inv * w[d];
+            // the index key of the token that closes the block
+            for (int64_t d = 0; d < DI; ++d) want[(size_t) (b * stride + D + d)] = ik[(size_t) ((b * ratio + ratio - 1) * DI + d)];
+        }
+        float *dv = dev.upload(v), *ds = dev.upload(s), *dw = dev.upload(w), *dik = dev.upload(ik);
+        float* state = dev.alloc<float>((size_t) std::max(1, ratio - 1) * 2 * D);
+        float* comp = dev.alloc<float>((size_t) (rows * stride));
+        float* raw = dev.alloc<float>((size_t) (RING * D));
+        float* lat = dev.alloc<float>((size_t) 8 * D);
+        int32_t *dpos = dev.alloc<int32_t>(8), *dbp = dev.alloc<int32_t>(8), *dnv = dev.alloc<int32_t>(8);
+        long long wrong = 0;
+        int64_t p0 = 0;
+        for (int T : windows) {
+            std::vector<int32_t> pos((size_t) T), bp((size_t) T), nv((size_t) T);
+            for (int t = 0; t < T; ++t) pos[(size_t) t] = (int32_t) (p0 + t);
+            strata::parity::copy_in(dpos, pos.data(), pos.size());
+            K::ds41_block_pos(dpos, ratio, dbp, dnv, T, nullptr);
+            K::ds41_compress_stream(dv + p0 * D, ratio > 1 ? ds + p0 * D : nullptr, state, dpos, dw, 1e-20f, ratio, D, T, lat,
+                                    nullptr);
+            K::ds41_comp_store(lat, dik + p0 * DI, dpos, ratio, D, DI, T, comp, rows, nullptr);
+            K::ds41_ring_store(dv + p0 * D, dpos, RING, D, T, raw, nullptr);
+            copy_out(bp.data(), dbp, bp.size());
+            copy_out(nv.data(), dnv, nv.size());
+            for (int t = 0; t < T; ++t)
+                wrong += bp[(size_t) t] != std::max<int64_t>(0, p0 + t - ratio + 1) || nv[(size_t) t] != (p0 + t + 1) / ratio;
+            p0 += T;
+        }
+        std::vector<float> got((size_t) (rows * stride)), ring((size_t) (RING * D));
+        copy_out(got.data(), comp, got.size());
+        copy_out(ring.data(), raw, ring.size());
+        const std::string tag = "ratio " + std::to_string(ratio);
+        bad += compare((tag + ": compressed cache, in windows").c_str(), got, want, 2e-5);
+        bad += exact((tag + ": block positions, visible rows").c_str(), wrong);
+        long long rw = 0;   // the ring holds the last RING positions
+        for (int64_t p = P - RING; p < P; ++p)
+            for (int64_t d = 0; d < D; ++d) rw += ring[(size_t) ((p % RING) * D + d)] != v[(size_t) (p * D + d)];
+        bad += exact((tag + ": raw ring").c_str(), rw);
+    }
+    return bad;
+}
+
 // ---- Engram
 int test_engram() {
     strata::parity::Device dev;
@@ -446,7 +516,7 @@ int main(int argc, char** argv) {
         }
     std::printf("ds41_parity: DeepSeek-V4.1-Flash's kernels against host references\n");
     const int bad = test_router() + test_hc() + test_compress() + test_engram() + test_engram_hash() + test_rope() +
-                    test_indexer() + test_sink_attn();
+                    test_indexer() + test_sink_attn() + test_state();
     std::printf("%s\n", bad ? "FAIL" : "PASS");
     return bad ? 1 : 0;
 }

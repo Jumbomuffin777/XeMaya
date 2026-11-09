@@ -156,6 +156,106 @@ void ds41_compress(const float* v, const float* s, const float* w, float eps, fl
     sync_if_needed(stream, event, "ds41_compress");
 }
 
+void ds41_ring_store(const float* kv, const int32_t* pos, int64_t ring, int64_t dim, int64_t n_tokens, float* raw,
+                     void* stream) {
+    if (n_tokens <= 0) return;
+    if (ring < n_tokens || dim <= 0)
+        throw core::DeviceError("ds41_ring_store: a ring of " + std::to_string(ring) + " rows for " +
+                                std::to_string(n_tokens) + " tokens");
+    const auto event = queue_for(stream).parallel_for(sycl::range<1>((size_t) (n_tokens * dim)), [=](sycl::id<1> i) {
+        const int64_t t = (int64_t) i[0] / dim, d = (int64_t) i[0] % dim;
+        raw[((int64_t) pos[t] % ring) * dim + d] = kv[t * dim + d];
+    });
+    sync_if_needed(stream, event, "ds41_ring_store");
+}
+
+void ds41_block_pos(const int32_t* pos, int ratio, int32_t* block_pos, int32_t* n_visible, int64_t n_tokens,
+                    void* stream) {
+    if (n_tokens <= 0) return;
+    if (ratio < 1) throw core::DeviceError("ds41_block_pos: ratio " + std::to_string(ratio));
+    const auto event = queue_for(stream).parallel_for(sycl::range<1>((size_t) n_tokens), [=](sycl::id<1> i) {
+        const int32_t p = pos[i[0]];
+        block_pos[i[0]] = p - ratio + 1 > 0 ? p - ratio + 1 : 0;
+        n_visible[i[0]] = (p + 1) / ratio;
+    });
+    sync_if_needed(stream, event, "ds41_block_pos");
+}
+
+void ds41_compress_stream(const float* v, const float* s, float* state, const int32_t* pos, const float* w, float eps,
+                          int ratio, int64_t dim, int64_t n_tokens, float* out, void* stream) {
+    if (n_tokens <= 0) return;
+    if (ratio < 1 || ratio > 8 || dim <= 0 || (ratio > 1 && (!s || !state)))
+        throw core::DeviceError("ds41_compress_stream: ratio " + std::to_string(ratio) +
+                                " (1 to 8; a gate and a state above 1)");
+    constexpr int WG = 256;
+    const auto event = queue_for(stream).submit([&](sycl::handler& h) {
+        sycl::local_accessor<float, 1> c_l(sycl::range<1>((size_t) dim), h);
+        h.parallel_for(sycl::nd_range<1>((size_t) n_tokens * WG, WG), [=](sycl::nd_item<1> it) {
+            const int64_t t = (int64_t) it.get_group(0);
+            const int lid = (int) it.get_local_id(0);
+            const bool done = (pos[t] + 1) % ratio == 0;
+            float ss = 0.0f;
+            for (int64_t d = lid; d < dim; d += WG) {
+                float c = 0.0f;
+                if (done && ratio == 1) {
+                    c = v[t * dim + d];
+                } else if (done) {
+                    // the block's row j: `back` rows before this token, in the window or in the state
+                    float m = -INFINITY;
+                    for (int j = 0; j < ratio; ++j) {
+                        const int64_t back = ratio - 1 - j;
+                        m = sycl::fmax(m, back <= t ? s[(t - back) * dim + d] : state[(j * 2 + 1) * dim + d]);
+                    }
+                    float sum = 0.0f, acc = 0.0f;
+                    for (int j = 0; j < ratio; ++j) {
+                        const int64_t back = ratio - 1 - j;
+                        const float sv = back <= t ? s[(t - back) * dim + d] : state[(j * 2 + 1) * dim + d];
+                        const float vv = back <= t ? v[(t - back) * dim + d] : state[(j * 2) * dim + d];
+                        const float e = sycl::exp(sv - m);
+                        sum += e;
+                        acc += vv * e;
+                    }
+                    c = acc / sum;
+                }
+                c_l[d] = c;
+                ss += c * c;
+            }
+            ss = sycl::reduce_over_group(it.get_group(), ss, sycl::plus<float>());
+            const float inv = done ? 1.0f / sycl::sqrt(ss / (float) dim + eps) : 0.0f;
+            for (int64_t d = lid; d < dim; d += WG) out[t * dim + d] = c_l[d] * inv * w[d];
+        });
+    });
+    sync_if_needed(stream, event, "ds41_compress_stream");
+    if (ratio == 1) return;
+    // the block left open after the window: its rows of this window into the state (the earlier ones are there)
+    const auto keep = queue_for(stream).parallel_for(sycl::range<1>((size_t) ((ratio - 1) * dim)), [=](sycl::id<1> i) {
+        const int64_t j = (int64_t) i[0] / dim, d = (int64_t) i[0] % dim;
+        const int64_t open = (pos[n_tokens - 1] + 1) % ratio;   // positions of the open block so far
+        if (j >= open) return;
+        const int64_t back = open - 1 - j;                       // rows before the window's last
+        if (back >= n_tokens) return;
+        state[(j * 2) * dim + d] = v[(n_tokens - 1 - back) * dim + d];
+        state[(j * 2 + 1) * dim + d] = s[(n_tokens - 1 - back) * dim + d];
+    });
+    sync_if_needed(stream, keep, "ds41_compress_stream (state)");
+}
+
+void ds41_comp_store(const float* lat, const float* ik, const int32_t* pos, int ratio, int64_t dim, int64_t idx_dim,
+                     int64_t n_tokens, float* comp, int64_t rows, void* stream) {
+    if (n_tokens <= 0) return;
+    if (ratio < 1 || dim <= 0 || idx_dim < 0) throw core::DeviceError("ds41_comp_store: ratio " + std::to_string(ratio));
+    const int64_t stride = dim + idx_dim;
+    const auto event = queue_for(stream).parallel_for(sycl::range<1>((size_t) (n_tokens * stride)), [=](sycl::id<1> i) {
+        const int64_t t = (int64_t) i[0] / stride, d = (int64_t) i[0] % stride;
+        const int64_t p = pos[t];
+        if ((p + 1) % ratio != 0) return;
+        const int64_t row = (p + 1) / ratio - 1;
+        if (row >= rows) return;
+        comp[row * stride + d] = d < dim ? lat[t * dim + d] : ik[t * idx_dim + (d - dim)];
+    });
+    sync_if_needed(stream, event, "ds41_comp_store");
+}
+
 void ds41_engram_gate(float* x, const float* kv, const float* gate_w, const float* keep, float rms_eps,
                       int64_t n_embd, int64_t n_tokens, void* stream) {
     if (n_tokens <= 0) return;
