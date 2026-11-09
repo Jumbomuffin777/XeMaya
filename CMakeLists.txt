@@ -201,6 +201,10 @@ if(STRATA_BUILD_TESTS)
   add_executable(model_spec_test src/artifact/model_spec_test.cpp)
   target_link_libraries(model_spec_test PRIVATE strata_artifact)
   add_test(NAME model_spec_test COMMAND model_spec_test)
+# XeMaya: DeepSeek-V4.1-Flash's tensor manifest (header-only; with file arguments it checks real models)
+add_executable(ds41_manifest_test src/artifact/ds41_manifest_test.cpp)
+target_include_directories(ds41_manifest_test PRIVATE include)
+add_test(NAME ds41_manifest_test COMMAND ds41_manifest_test)
 endif()
 
 # ---- strata_plan ----------------------------------------------------------
