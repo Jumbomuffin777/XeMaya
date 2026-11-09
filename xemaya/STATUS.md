@@ -1,6 +1,6 @@
 # XeMaya status
 
-Updated 2026-11-09 16:30 UTC (after GPU window 2: GLM-5.3-Flash Maya-S v2 runs natively on the three Arc cards). Branch `xemaya/main` = `origin/main` of the private
+Updated 2026-11-09 17:30 UTC (after GPU window 2; GLM attention, agent-turn and window-3 work since, CPU only). Branch `xemaya/main` = `origin/main` of the private
 https://github.com/Jumbomuffin777/XeMaya. Every item below was run on Zability unless marked otherwise.
 
 ## Works (checked)
@@ -121,11 +121,22 @@ NVMe during the prompt.
 5. Untested: contexts beyond 2.4K, the OpenAI/Anthropic serve path, tool calls, streaming, long soaks, concurrent
    requests, and other prompts. Correctness rests on one 16-token comparison plus the kernel tests.
 
+## Since window 2 (CPU only, not yet run on an Arc GPU)
+
+| Change | State |
+|---|---|
+| `glm5_mla_attn_tiled` (`src/kernels/xe/glm5.cpp`): a token and 8 heads a work-group, the latent cells loaded 32 at a time into local memory once for those heads (the original reads each cell twice for every head), an online softmax, and in decode windows a token's cells split over work-groups and merged | `glm5_parity`'s `test_mla_tiled` against a double-precision reference (prompt chunk with tail pools, decode with 32 splits, no scratch, compact `--kv-ram` rows, 16 heads): worst 1.1e-7, PASS on the CPU device. CPU-device benchmark (`glm5_parity --bench-mla`): 1.5-1.6x on prompt chunks, 1.2-1.8x on decode windows. **Off by default** (`XEMAYA_MLA_ATTN=tiled`) until the cards confirm it; the original stays the fallback. No XMX: the CPU device here cannot test joint_matrix, and the window's GFLOP/s will show whether it is needed |
+| DSA's parts in `STRATA_PROMPT_PROFILE` (projections, indexer and selection, wk_b, attention, wv_b and output) | builds |
+| **Prompt-end checkpoint** (`plain_generate.cpp` serve, `PlainModel::save_recurrent` / `restore_recurrent`): GLM's recurrent layers resumed only a request extending the whole live conversation, and an agent's next turn re-renders the reply (checked with serve's `ChatTemplate`: a tool call with newlines re-renders without them), so every turn read the whole conversation again. Now the recurrent state (~140 MB) is saved once a reply's first token is out, and a request that starts with that prompt resumes after it. `XEMAYA_PROMPT_CHECKPOINT=0` turns it off | builds; the window's test compares a resumed request's tokens with the same request read from scratch |
+| Server tokenizer for GLM (`tools/strata_tokenizer.py` on the Maya GGUF) | ids equal to llama.cpp's on 11- and 4,258-token texts |
+| New llama.cpp CPU references (`tools/xemaya/ref_cpu_ids.sh`) | chat-agent (GLM template with a tool, 128 tokens, 7 near-ties under 0.1), code-512 (64 tokens, 3), ctx-2377 (64 tokens) in `xemaya/reference/` |
+| Window-3 tools: `make_prompts.py`, `engine_serve.py` (many requests per load, the checkpoint test), `agent_session.py` (OpenAI / Anthropic agent session, tool calls, streaming, reasoning, cancellation), `window3.sh`, `window_report.py` | self-tested on a fake engine and on server.py's mock engine |
+
 ## Unverified (built, not run on an Arc GPU)
 
-- Kernels other than glm5/ds41/elementwise have only run on the CPU device.
+- The tiled attention, the prompt-end checkpoint and the DSA profile split (above).
+- Contexts beyond 4K, the HTTP server with the GLM engine, tool calls and streaming from the real model.
 - DeepSeek-V4.1 has not run on a GPU (its PlainModel block is not written yet).
-- The DeepSeek kernels are written for correctness, not speed.
 
 ## In progress or not started
 
@@ -144,10 +155,19 @@ NVMe during the prompt.
 
 ## Needs the owner's approval (not done)
 
-1. **Another GPU window** after the DSA attention rewrite (parity-tested on the CPU device first), to measure it and
-   to test longer contexts and the serve path. Same procedure as windows 1 and 2.
-2. For kernel-only tests without stopping production, an `OWNERS` entry `'xemaya-dev': B60` would do (ComfyUI and
-   marrow-qa could not use the B60 meanwhile). Rollback: remove the entry.
+1. **GPU window 3** (production Qwen stopped and the agents parked by the owner, as before; about 75-90 minutes):
+   `tools/xemaya/window3.sh` under `gpulease.py run --holder xemaya-dev --memory-budget-gib 60`. Phases:
+   1. kernel parity on each card (with the tiled attention) and the attention benchmark at 2K-64K cells (B70, B60)
+   2. / 3. one model load each, original vs tiled attention, prompt profile on: 2,377- and 8K-token prompts
+   4. the faster attention: correctness against the three new references, uncached prefill / TTFT / decode at 64K,
+      32K and 8K, the prompt-end checkpoint test; 4b. 32K with `--kv-ram off`
+   5. MTP drafts on: 2,377 and 32K, the checkpoint with drafts
+   6. the HTTP server with GLM: a 6-file coding-agent session (TTFT, cached tokens per turn, tool calls, streaming,
+      reasoning, cancellation, Anthropic route), then 3 turns with the checkpoint off for comparison
+   7. (only if time is left) a 128K prompt
+   Ends as before: everything unloaded, lease free, cards idle, then `xemaya-window-end.sh`.
+2. For kernel-only tests without stopping production, an `OWNERS` entry `'xemaya-dev': B60` would do. Rollback:
+   remove the entry.
 
 ## Notes
 

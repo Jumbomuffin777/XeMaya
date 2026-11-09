@@ -50,7 +50,7 @@ oneAPI. intel/llvm DPC++ 7+ still works.
 | 2 | Upstream Strata v0.2.8 -> v0.2.12: `serve/` correctness (tool calls, request lifecycle, Anthropic route) | tool calls done; lifecycle pending |
 | 3 | Native GLM-5.3-Flash: Maya-S v2 (IQ2_XXS) on the Arc cards, output checked against llama.cpp | runs on B70+B65+B60, 16/16 tokens match (2026-11-09); tuning |
 | 4 | Native DeepSeek-V4.1-Flash: PlainModel `deepseek41` block, SYCL kernels with CPU-device parity tests | spec, manifest, kernels done; block next |
-| 5 | Performance and reliability: decode/prefill, expert residency, PCIe, multi-GPU scheduling, API soak | GLM measured (STATUS); DSA attention kernel next |
+| 5 | Performance and reliability: decode/prefill, expert residency, PCIe, multi-GPU scheduling, API soak | GLM measured (STATUS); tiled attention and the prompt-end checkpoint built, window 3 prepared |
 
 ### Milestone 3: GLM-5.3-Flash
 
@@ -62,6 +62,20 @@ oneAPI. intel/llvm DPC++ 7+ still works.
 3. Needs GPU (approval): load on B70+B65+B60, then a greedy 16-token check against llama.cpp SYCL on the same file. The
    historical reference is 68.3 / 13.6 tok/s on stock llama.cpp v0.8.0.
 4. Then the serve path: OpenAI and Anthropic routes, tool calls, streaming.
+
+### Milestone 5: GLM for coding agents (decided 2026-11-09)
+
+Priorities from the owner: GLM attention and TTFT first, then agent usability (cached prefixes, long context, tool
+calls, sustained throughput), then wider correctness, then DeepSeek. Evidence before optimization:
+
+1. Attention: `glm5_mla_attn_tiled` (built, CPU-checked). Window 3 measures it against the original and prints the
+   achieved GFLOP/s; only if it is still far from the cards' rate is an XMX (joint_matrix) version worth its cost,
+   tested on the cards' own parity run since the CPU device here cannot run joint_matrix.
+2. Long context: DSA selects at most 8,192 cells a token, so attention grows linearly past 8K but the indexer's
+   scores grow with the square of the prompt (64K: ~4.4 T multiply-adds a layer). Window 3's profile split shows which.
+3. Agent turns: the prompt-end checkpoint (built). Next if the window shows the need: checkpoints inside long prompts
+   (Qwen3.8's `--prompt-cache-every`), so a client that edits early history does not read everything again.
+4. Load time (53-60 s, NVMe-bound): lower priority.
 
 ### Milestone 4: DeepSeek-V4.1-Flash
 

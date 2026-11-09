@@ -67,6 +67,11 @@ the CPU with `tools/xemaya/ref_cpu.sh` (llama.cpp v0.8.0 built CPU-only in `/DAT
 through `tools/xemaya/compare_ref.py`. `iq_parity` reads its fixtures from `/DATA/Projects/xemaya/iq_fixture`
 (`tools/iq_fixture.py`); on the CPU device it takes ~35 minutes.
 
+GLM serving pieces: the tokenizer folder `/DATA/Projects/xemaya/serve-glm/tok/tokenizer` (from
+`tools/strata_tokenizer.py`), the window prompts in `/DATA/Projects/xemaya/prompts` (`tools/xemaya/make_prompts.py`).
+`XEMAYA_MLA_ATTN=tiled` selects the tiled DSA attention; `XEMAYA_PROMPT_CHECKPOINT=0` turns the prompt-end
+checkpoint off. `tools/xemaya/engine_serve.py` drives a loaded engine with many requests (one load per window phase).
+
 Model headers without downloading: `tools/xemaya/gguf_inspect.py hf:OWNER/REPO/PATH.gguf`.
 Model shape as the engine reads it: `build-icpx/model_spec_test FILE.gguf`.
 

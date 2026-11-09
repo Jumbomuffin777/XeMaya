@@ -57,7 +57,7 @@ B60 24 GB, Intel oneAPI `icpx` 2026.2).
 | Element-wise kernels | `elementwise_parity`: 0 failures on each Arc card |
 | Server | 14 newer Strata tool-call fixes ported; serve tests 930 passed, 0 failed |
 
-Measured on 2026-11-09 (GPU window 2); the configurations, telemetry and bottlenecks are in xemaya/STATUS.md. Next: the DSA attention kernel (46% of the prompt's time), then DeepSeek-V4.1's block. Detailed notes: [xemaya/STATUS.md](xemaya/STATUS.md).
+Measured on 2026-11-09 (GPU window 2); the configurations, telemetry and bottlenecks are in xemaya/STATUS.md. Since then, built and checked on the CPU, not yet on the cards: a tiled DSA attention kernel (46% of the prompt's time went to DSA) and a prompt-end checkpoint so an agent's next turn does not read the whole conversation again. Detailed notes: [xemaya/STATUS.md](xemaya/STATUS.md).
 
 ## Roadmap
 
