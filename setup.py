@@ -105,6 +105,7 @@ HF_REVISIONS = {
     "pfeifferj/Ornith-1.5-35B-A3B-GSQ-RCO-GGUF": "0bfdfe7f6c424de60481c26379c9d821469f75f1",         # 2026-10-11
     "llm-jp/llm-jp-4.1-32b-a3b-thinking-gguf": "044a4447c2da94b489484927355665b819eb3d4b",           # 2026-10-11
     "unsloth/Qwen3.6-35B-A3B-MTP-GGUF": "5bc3e238d916f48a861bac2f8a1990a0e9b7e98d",                  # 2026-10-12
+    "peasantsmith/GLM-5.3-Flash-Maya-GGUF": "a1c2a554ea72a7e8e66cc28b3eaf5036c9313860",  # 2026-11-03, Project Maya's GLM-5.3-Flash quants (XeMaya)
     "unsloth/GLM-5.3-Flash-GGUF": "a38483c8cd5df544f53d70fb281afe97369d5ab6",                        # 2026-10-09
     "agentionai/Qwen3.8-Flash-Next-Gyro-GGUF": "1ada08422e404aca51ab9df665f089f34c419c6b",          # 2026-10-13
     "agentionai/Qwen3.8-Flash-Next-Gyro-Coder-GGUF": "b32c7399b57f7a627b8aa9403ef06767e9a444e8",    # 2026-10-24
@@ -627,6 +628,28 @@ _GLM53_IQ4 = _glm53_parts("UD-IQ4_XS", [
     (49607025280, "7c2c63c9c30f8060428fdf2ac935dbf2ee9ad8f771d62b6ae47a7f7f2c1520e7"),
     (49486530144, "06c90f191871317c92dd9d25a353b687aed44c50f3ac6c713e9fe410bc2d26dd"),
     (7729791616, "66ebf9ec85e04d3f44af674ae4f694acbc89cc53db75e42f2f4d3646bf321c0d")])
+# XeMaya: Project Maya's GLM-5.3-Flash quants (glm5-next; the files read as they are)
+_GLM53_MAYA = "peasantsmith/GLM-5.3-Flash-Maya-GGUF"
+_GLM53_MAYA_S_V2 = [
+    {"path": "Maya-S-v2-IQ2_XXS/GLM-5.3-Flash-Maya-S-v2-IQ2_XXS-00001-of-00003.gguf", "size": 47835993056, "sha256": "e56ef50efd71d81ddf6249e08bd2ef5af96ed348c2b7a004491d46168d0ecaa7"},
+    {"path": "Maya-S-v2-IQ2_XXS/GLM-5.3-Flash-Maya-S-v2-IQ2_XXS-00002-of-00003.gguf", "size": 47797478080, "sha256": "2d65d88a69f8dc124c8d24bd33b33161ddab218918b4253ad4f500aeede84df5"},
+    {"path": "Maya-S-v2-IQ2_XXS/GLM-5.3-Flash-Maya-S-v2-IQ2_XXS-00003-of-00003.gguf", "size": 835121120, "sha256": "a6a981c4fee7a53d78bdbd97d8f465d48ddf439cf938ff90617f395e0351b5a6"}]
+_GLM53_MAYA_S24 = [
+    {"path": "Maya-S24/GLM-5.3-Flash-Maya-S24-IQ2_XXS_S-00001-of-00003.gguf", "size": 46886573024, "sha256": "8ebd5c74bcf65ece2a8699b7b6fd2b8d177f350ed252cee252fdd99b86a0138c"},
+    {"path": "Maya-S24/GLM-5.3-Flash-Maya-S24-IQ2_XXS_S-00002-of-00003.gguf", "size": 46982144736, "sha256": "4bd445da3a0128a9c5b32228c924e0a622aa4a132c7a8dc9a2c207a4beea8e34"},
+    {"path": "Maya-S24/GLM-5.3-Flash-Maya-S24-IQ2_XXS_S-00003-of-00003.gguf", "size": 832958464, "sha256": "a6fd4e88007ac49b431c7d02be34e43ab7a09224d53a0c52782327613cb41917"}]
+_GLM53_MAYA_XS = [
+    {"path": "Maya-XS/GLM-5.3-Flash-Maya-XS-IQ1_S-00001-of-00002.gguf", "size": 47584640960, "sha256": "711b427e55fa6da1cbe28933eb00174424f6201f0210b5e4a216d5e33b6222c7"},
+    {"path": "Maya-XS/GLM-5.3-Flash-Maya-XS-IQ1_S-00002-of-00002.gguf", "size": 25826748128, "sha256": "a9841bc37abef5e3e5bc84e49e753b67f7e249098e8e9bc3dd17415104112885"}]
+_GLM53_MAYA_M = [
+    {"path": "Maya-M/GLM-5.3-Flash-Maya-M-IQ2_S-00001-of-00003.gguf", "size": 47678327584, "sha256": "3f740d1b1022b4a0ddad50cd861bb071dd415bde94afa1292d0476641186c638"},
+    {"path": "Maya-M/GLM-5.3-Flash-Maya-M-IQ2_S-00002-of-00003.gguf", "size": 47820244896, "sha256": "285951d2afa0cd98285b03d0dc4aa68d83daf1a6f4a2594fe40b0cdd27ade485"},
+    {"path": "Maya-M/GLM-5.3-Flash-Maya-M-IQ2_S-00003-of-00003.gguf", "size": 20504990688, "sha256": "ebf1ce713f71207747e10eeebed87597969d8b5e1d9dd817420d2c2f7ca51e0e"}]
+_GLM53_MAYA_L = [
+    {"path": "Maya-L/GLM-5.3-Flash-Maya-L-IQ3_S-00001-of-00004.gguf", "size": 47718550176, "sha256": "c41aeaf3a3e0022150b7c355e7f4df6c92ba68c4794e3e827e02e56b54886b9e"},
+    {"path": "Maya-L/GLM-5.3-Flash-Maya-L-IQ3_S-00002-of-00004.gguf", "size": 47957222464, "sha256": "351d59366afb7be7dfc3fb7af91281f7ccf00760b17dc45f82090325a7b34f64"},
+    {"path": "Maya-L/GLM-5.3-Flash-Maya-L-IQ3_S-00003-of-00004.gguf", "size": 47305387552, "sha256": "3685962fdfeaf130b74f98d3ce703ee33d818aa9991725932cb305b7c48db8af"},
+    {"path": "Maya-L/GLM-5.3-Flash-Maya-L-IQ3_S-00004-of-00004.gguf", "size": 13338053216, "sha256": "1af62cd72de6460c85369d988abbb790d6ec3a97507df51faf9bf32aa2b600d0"}]
 PLAIN_FAMILIES: dict[str, dict[str, Any]] = {
     "ornith": {"title": "Ornith-1.5-35B-A3B", "by": "Ornith AI (MIT)",
                "about": "35B, 3B active; a Qwen3.5 MoE: Q4_K_M to BF16, and community GSQ-RCO 3 and 3.5 bits",
@@ -735,7 +758,7 @@ PLAIN_FAMILIES["qwen35-uncensored"] = {
 # GLM-5.3-Flash (glm5-next): 320B, 18B active, KDA and DSA attention with four residual streams (mHC), its MTP layer
 # not read yet; Unsloth's files in several parts
 PLAIN_FAMILIES["glm53"] = {
-    "title": "GLM-5.3-Flash", "by": "Z.ai (MIT), GGUFs by Unsloth",
+    "title": "GLM-5.3-Flash", "by": "Z.ai (MIT), GGUFs by Unsloth and Project Maya",
     "about": "320B, 18B active; a large MoE for the PCs whose RAM and VRAM hold 95 GB or more",
     "tag": "glm53-", "name": "glm-5.3-flash", "max_context": 262144, "plain": True,
     "profile": "expert-profile-glm53.bin",
@@ -747,6 +770,16 @@ PLAIN_FAMILIES["glm53"] = {
                      "tested": True},
         "UD-IQ4_XS": {"repo": _GLM53, "file": _GLM53_IQ4[0]["path"], "parts": _GLM53_IQ4,
                       "size": sum(x["size"] for x in _GLM53_IQ4), "about": "4-bit (Unsloth Dynamic), the best quality"},
+        "Maya-S-v2": {"repo": _GLM53_MAYA, "file": _GLM53_MAYA_S_V2[0]["path"], "parts": _GLM53_MAYA_S_V2,
+                 "size": sum(x["size"] for x in _GLM53_MAYA_S_V2), "about": "Project Maya's default: 2-bit experts, 83% the same next token"},
+        "Maya-S24": {"repo": _GLM53_MAYA, "file": _GLM53_MAYA_S24[0]["path"], "parts": _GLM53_MAYA_S24,
+                 "size": sum(x["size"] for x in _GLM53_MAYA_S24), "about": "Maya-S with 4-bit attention: more room for experts on a 24 GB card"},
+        "Maya-XS": {"repo": _GLM53_MAYA, "file": _GLM53_MAYA_XS[0]["path"], "parts": _GLM53_MAYA_XS,
+                 "size": sum(x["size"] for x in _GLM53_MAYA_XS), "about": "Project Maya's smallest"},
+        "Maya-M": {"repo": _GLM53_MAYA, "file": _GLM53_MAYA_M[0]["path"], "parts": _GLM53_MAYA_M,
+                 "size": sum(x["size"] for x in _GLM53_MAYA_M), "about": "more bits where they count, calibrated toward tool calls and front-end code"},
+        "Maya-L": {"repo": _GLM53_MAYA, "file": _GLM53_MAYA_L[0]["path"], "parts": _GLM53_MAYA_L,
+                 "size": sum(x["size"] for x in _GLM53_MAYA_L), "about": "Project Maya's largest: 99.2% of the zero-shot accuracy"},
     }}
 FAMILIES.update(PLAIN_FAMILIES)
 
@@ -3110,6 +3143,11 @@ SUPPORTED_GGUFS = ("XeStrata runs ISTA-DASLab's GSQ-RCO files (Qwen3.8-Flash-Nex
 
 def gguf_unsupported(name: str) -> str | None:
     """#444: the quantization a GGUF's name says, when it is one XeStrata cannot run (not a setup size); else None."""
+    # XeMaya: a part of a model setup knows by its exact file name is supported (Project Maya's GLM-5.3-Flash
+    # Maya-S-v2-IQ2_XXS names a quantization the Qwen sizes do not have)
+    if any(name == Path(part["path"]).name for fam in PLAIN_FAMILIES.values() for d in fam["models"].values()
+           for part in plain_parts(d)):
+        return None
     m = GGUF_QUANT.search(name)
     return m.group(1) if m and m.group(1).upper() not in MODELS and not name.lower().startswith("mmproj") else None
 
