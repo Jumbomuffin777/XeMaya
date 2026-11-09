@@ -48,24 +48,22 @@ B60 24 GB, Intel oneAPI `icpx` 2026.2).
 | --- | --- |
 | Build | Core, tests, parity binaries and the full engine (GLM and DeepSeek kernels included) build with 0 errors |
 | Host tests | XeStrata's 13 host tests, plus `model_spec_test` and `ds41_manifest_test` |
-| GLM-5.3-Flash kernels | `glm5_parity`: 28/28 on the CPU device and on each Arc card (B70, B65, B60) |
-| GLM Maya GGUFs | Maya-S v2 IQ2_XXS reads as `glm5-next`. Its F32 mHC mixer weights, which stopped the first GPU load, are now taken in F32 (checked on the CPU device against a double-precision reference); not yet loaded on a GPU |
+| GLM-5.3-Flash kernels | `glm5_parity` (with the F32 mixer checks) on the CPU device and on each Arc card (B70, B65, B60) |
+| GLM-5.3-Flash on Arc | Maya-S v2 IQ2_XXS runs natively on B70 + B65 + B60. Its first 16 greedy tokens match llama.cpp's (16 of 16 top-1 when forced along them). 2,377-token prompt: prefill 93-100 tok/s (stock llama.cpp SYCL 68.3), decode 13.9 tok/s (13.6), 16.0 with MTP drafts; 512 tokens after a short prompt: 17.3, 22.9 with drafts. Not production-ready: one prompt checked, 4K context, no API soak |
 | llama.cpp reference | 16 greedy tokens of Maya-S v2 from llama.cpp v0.8.0 on the CPU, with each step's top-5, saved for the GPU comparison |
 | DeepSeek-V4.1 model files | All 1043 tensors of both ISTA-DASLab models match llama.cpp's shapes |
 | DeepSeek-V4.1 kernels | `ds41_parity`: 18/18 on the CPU device and on each Arc card (router, mHC, compressor, Engram gate and hash, YaRN RoPE, indexer, top-k, sink attention) |
-| i-quant kernels | `iq_parity`: 0 failures over 10 formats (IQ1_M to IQ4_XS, Q2_0, Q3_K) on the CPU device, on rows of a real model |
+| i-quant kernels | `iq_parity`: 0 failures over 10 formats (IQ1_M to IQ4_XS, Q2_0, Q3_K) on the CPU device and each Arc card |
 | Element-wise kernels | `elementwise_parity`: 0 failures on each Arc card |
 | Server | 14 newer Strata tool-call fixes ported; serve tests 930 passed, 0 failed |
 
-The GLM and DeepSeek kernel tests passed on the Arc cards in a GPU window on 2026-11-09. Not verified yet: no GLM or
-DeepSeek model has generated on a GPU (Maya-S v2 is ready for its first GPU run), and there is no llama.cpp
-reference output for Maya-S v2 yet. Detailed notes: [xemaya/STATUS.md](xemaya/STATUS.md).
+Measured on 2026-11-09 (GPU window 2); the configurations, telemetry and bottlenecks are in xemaya/STATUS.md. Next: the DSA attention kernel (46% of the prompt's time), then DeepSeek-V4.1's block. Detailed notes: [xemaya/STATUS.md](xemaya/STATUS.md).
 
 ## Roadmap
 
 1. **Foundation**: fork, licences, Intel oneAPI build, kernel tests. *Done.*
 2. **Catch up with Strata** where it matters for Intel: server correctness (tool calls done; request lifecycle next).
-3. **GLM-5.3-Flash on Arc**: load Maya-S v2 across several GPUs, match llama.cpp token for token, then tune.
+3. **GLM-5.3-Flash on Arc**: load Maya-S v2 across several GPUs, match llama.cpp token for token, then tune. *Running and matching (2026-11-09); tuning: the DSA attention kernel next.*
 4. **DeepSeek-V4.1-Flash on Arc**: the model block on XeStrata's PlainModel (mHC, Engram, expert tiers, multi-GPU).
 5. **Production quality**: tool calling, long-run stability, and prefill/decode performance against the baselines below.
 
@@ -79,7 +77,8 @@ Earlier runs of the same models on the same machine through llama.cpp's SYCL bac
 | --- | ---: | ---: |
 | DeepSeek-V4.1 Maya-XS (with a custom loader patch) | 45.6 tok/s | 10.9 tok/s |
 | GLM-5.3 Maya-S v2 (stock llama.cpp) | 68.3 tok/s | 13.6 tok/s |
-| GLM-5.3 Maya-S v2 (experimental grouped SYCL matmul) | 108.9 tok/s | |
+| GLM-5.3 Maya-S v2 (experimental grouped SYCL matmul) | 108.9 tok/s | 14.0 tok/s |
+| *XeMaya, GLM-5.3 Maya-S v2, 3 GPUs, same prompt length (2026-11-09)* | *93-100 tok/s* | *13.9 tok/s; 16.0 with MTP drafts* |
 
 These are reference points, not like-for-like targets.
 

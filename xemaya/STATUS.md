@@ -1,6 +1,6 @@
 # XeMaya status
 
-Updated 2026-11-09 15:20 UTC (second GPU window prepared; no GPU used since the first). Branch `xemaya/main` = `origin/main` of the private
+Updated 2026-11-09 16:30 UTC (after GPU window 2: GLM-5.3-Flash Maya-S v2 runs natively on the three Arc cards). Branch `xemaya/main` = `origin/main` of the private
 https://github.com/Jumbomuffin777/XeMaya. Every item below was run on Zability unless marked otherwise.
 
 ## Works (checked)
@@ -40,34 +40,91 @@ Next window needs: F32 mHC mixers in PlainModel (an F32 or F32->BF16 path in `hc
 test first), the iq fixtures (`python tools/iq_fixture.py --out logs/iq_fixture`, then `iq_parity logs/iq_fixture`), and a llama.cpp reference produced
 beforehand on CPU or with a warmed build so the window is spent on XeMaya.
 
-## Second GPU window: ready (needs the owner's window)
+## GPU window 2: GLM-5.3-Flash Maya-S v2 on the Arc cards (2026-11-09 15:39-16:13 UTC)
 
-Run, inside the whole-host lease with production stopped as in the first window:
+Owner-approved; production Qwen stopped and the agents parked by the owner. Whole-host lease
+(`gpulease.py run --holder xemaya-dev`), preflight passed, `gpu_partitions.py` untouched. Ended with
+`xemaya-window-end.sh` (Qwen healthy after 60 s). Raw lines of every run:
+`xemaya/bench/2026-11-09-glm53-maya-s-v2-window2.txt`; logs in `/DATA/Projects/xemaya/logs/window2/`.
 
-```sh
-cd /DATA/Projects/xemaya/XeMaya
-nohup python3 /DATA/AppData/zability-gpu-lease/gpulease.py run --holder xemaya-dev --memory-budget-gib 60 -- \
-    bash tools/xemaya/gpu_window.sh > ../logs/window2.log 2>&1 &
-```
+Model: GLM-5.3-Flash Maya-S v2 IQ2_XXS (89.8 GiB, sha256-checked). Engine: `build-engine` (icpx 2026.2, JIT SPIR-V,
+`SYCL_CACHE_PERSISTENT=1`), `--max-context 4096`, greedy, one process per run (load not included in the speeds).
 
-The script stops at the first failure (iq_parity excepted). Steps:
+### Correctness
 
-1. Kernel parity on each card: `glm5_parity` (with the F32 mixer checks) and `ds41_parity`.
-2. Maya-S v2 on B70 + B65 + B60 (`--layer-split auto`), forced along the reference's 16 tokens with every step's logits
-   (`--spec-follow`, `--dump-logits`), judged by `tools/xemaya/compare_ref.py` (PASS: top-1 equal at every step whose
-   reference margin is at least 0.1, median |d logprob| at most 0.3).
-3. A free greedy run of 128 tokens: its first 16 against the reference, and the decode speed without drafts.
-4. `iq_parity` on the fixtures, each card, 5 minutes at most; reported, not a stop (it passed on the CPU device).
-5. The speed test: 128 tokens with the MTP layer's drafts (`--spec 3`); the tokens should equal step 3's.
+| Check | Result |
+|---|---|
+| `glm5_parity` (incl. the F32 mixer checks), `ds41_parity` | PASS on B70, B65 and B60 |
+| `iq_parity` (10 formats, real rows) | 0 failures on B70, B65 and B60 |
+| First load | Stopped at `blk.3.indexer.proj.weight` (Q8_0 in Maya's file; the loader took F32/BF16 only). Fixed in the window: `upload_f32` widens Q8_0 exactly on the host. Reload succeeded |
+| 16 tokens forced along the llama.cpp v0.8.0 CPU reference | **PASS**: top-1 equal at 16 of 16 steps (including the reference's near-tie at step 3), median \|d logprob\| 0.013, max 0.399 |
+| Free greedy run | first 16 tokens identical to the reference |
+| MTP drafts (`--spec 3`) | short prompt: the same 128 tokens as without drafts. After the 2,377-token prompt: identical to token 58, then a different pick at a near-tie (token 59: 320 at -1.996 vs 323 at -2.125, margin 0.13), as batched verify windows round differently |
+| Repeatability | two runs of the same configuration gave the same 64 tokens |
 
-`compare_ref.py` was self-tested on synthetic logits (the reference's own: PASS; one confident step demoted: FAIL).
-The engine is JIT-compiled (no `-fsycl-targets`), so the first load also compiles its kernels for the cards;
-`SYCL_CACHE_PERSISTENT=1` lets the later runs reuse them.
+### Speed (prompt of 2,377 tokens + 128 generated unless noted; TTFT = the prompt's time, the first token included)
+
+| Configuration | Prefill tok/s | TTFT s | Decode tok/s | Experts hit in VRAM |
+|---|---|---|---|---|
+| 3 GPUs, old auto split (B60 7 layers) | 92.1 | 25.8 | 13.48 | 92.6% |
+| 3 GPUs, `--layer-split 19,35` | 99.5 | 23.9 | 13.82 | 95.0% |
+| same, `--kv-ram off` | 100.3 | 23.7 | 13.45 | 95.0% |
+| same, MTP drafts `--spec 3` | 92.3 | 25.8 | **15.97** (69.8% accepted) | 93.4% |
+| 3 GPUs, new auto split (B70 16, B65 17, B60 9 MoE layers) | 92.9 | 25.6 | 13.87 | 94.5% |
+| 2 GPUs B70 + B65, auto (64 generated) | 92.8 | 25.6 | 12.48 | 76.7% |
+| 1 GPU B70 (64 generated) | 88.7 | 26.8 | 6.15 | 41.8% |
+| 3 GPUs, new auto, 11-token prompt, **512 generated** | - | - | **17.30** | 95.8% |
+| same with `--spec 3` | - | - | **22.90** (84.0% accepted) | 94.9% |
+
+Baselines (Maya's report, 2,377-token prompt + 128, second warm request): stock llama.cpp v0.8.0 SYCL 68.3 / 13.6,
+grouped MUL_MAT_ID 108.9 / 14.0. XeMaya: prefill **+36-47% over stock**, 8-15% under the grouped build; decode at
+2.4K context **on par** without drafts (13.4-13.9) and **+14% over the grouped build with MTP drafts** (15.97); at short
+context 17.3 / 22.9 tok/s. Caveats: the baseline's prompt text was not found, so this prompt is the same length of
+different text (`docs/DETAILS.md`); prefill varied 92-100 tok/s between runs with the share of experts read from the
+NVMe during the prompt.
+
+### Where the time and memory go (telemetry: xpu-smi 1 s samples, /proc/meminfo, /proc/diskstats)
+
+- **VRAM**: B70 29.5 / 32 GiB, B65 29.5 / 32 GiB, B60 21.9 / 24 GiB (3 GPUs). The VRAM tier holds 10,427-10,690 of
+  12,096 expert slots (6.8 MiB each).
+- **GPU activity** (xpu-smi compute %, decode): B70 53%, B65 62%, B60 45%; prompt 26-39%. These include the cards'
+  waits on the host between layers.
+- **RAM**: MemAvailable stayed >= 70 GiB. Pinning all experts would need 80 GiB plus 95.7 GiB beside them, so the
+  experts outside VRAM are read in place through the page cache (6.6 GiB resident complement, ~67 GiB cached).
+- **PCIe**: host links measured 28.6-28.7 GB/s (B70, B65) and 7.0 GB/s (B60). No routed expert crosses PCIe in decode
+  (misses run on the CPU pool, 15 workers); the adaptive tier's swaps (700-1,900 a run, 6.8 MiB each) do.
+- **NVMe**: load reads 82-105 GB at 1.55-2.0 GB/s (53-60 s); a 2,377-token prompt reads 9-18 GB (0.4-0.7 GB/s);
+  3-GPU decode ~0.03 GB/s. One GPU: decode reads 0.69 GB/s, so its 6.15 tok/s is NVMe/page-cache bound.
+- **Decode profile** (`STRATA_WINDOW_TIMES`): a token is 42 MoE rings (GPU to host and back). Old split: the GPU took
+  0.96 ms to each ring and the host 0.76-1.10 ms to answer (plan + the CPU's missed experts), the CPU the critical path.
+  Giving the B60 more layers cut the answer to 0.30 ms and decode rose 11.95 -> 16.14 tok/s (short prompt). At 2.4K
+  context the GPU's part grows to 1.46 ms a ring: the DSA attention.
+- **Prefill profile** (`STRATA_PROMPT_PROFILE`, 2,377 tokens, the three stages summed): DSA attention 10.4 s (46%),
+  routed experts 7.8 s (34%), KDA 2.6 s, shared/dense FFN 0.6 s, staging and head 0.7 s.
+
+### Code changes made in the window (committed)
+
+1. `upload_f32` takes Q8_0 (Maya's `indexer.proj`), widened exactly on the host.
+2. `--layer-split auto`: a slow-link GPU's whole layers are sized by the file's mean routed-block bytes at 97% of its
+   room (was the largest layer at 80%): the B60 gets 9 MoE layers instead of 7, and decode after 2,377 tokens went
+   13.48 -> 13.87 tok/s with no manual split.
+
+### Remaining bottlenecks and gaps (not production-ready)
+
+1. **DSA attention** (`glm5_mla_attn`, one work-group per head, FP32 vector code; the indexer): 46% of prefill and the
+   context-dependent part of decode. Next: an XMX (joint_matrix) / split-over-cells version, parity-tested on the CPU
+   device first.
+2. **Prefill experts** (34%) and the 9-18 GB of NVMe reads per long prompt: the page cache cannot hold the model under
+   the 60 GB cap.
+3. **Load time** 53-60 s, NVMe-bound at ~1.6 GB/s.
+4. **42 host round trips per token**; at most ~0.3 ms each on the host now, ~1 ms on the GPU.
+5. Untested: contexts beyond 2.4K, the OpenAI/Anthropic serve path, tool calls, streaming, long soaks, concurrent
+   requests, and other prompts. Correctness rests on one 16-token comparison plus the kernel tests.
 
 ## Unverified (built, not run on an Arc GPU)
 
 - Kernels other than glm5/ds41/elementwise have only run on the CPU device.
-- The `strata` engine has not loaded a model (Maya-S v2 is refused for its F32 mHC mixers; see the GPU window).
+- DeepSeek-V4.1 has not run on a GPU (its PlainModel block is not written yet).
 - The DeepSeek kernels are written for correctness, not speed.
 
 ## In progress or not started
@@ -87,12 +144,10 @@ The engine is JIT-compiled (no `-fsycl-targets`), so the first load also compile
 
 ## Needs the owner's approval (not done)
 
-1. **The second GPU window** (as on 2026-11-09: production Qwen stopped by the owner, XeMaya under the whole-host lease).
-   Prepared: see "Second GPU window" above. Impact: production Qwen and the
-   Hermes agents are down for the window. Rollback: the owner's `xemaya-window-end.sh`.
-2. For kernel-only tests without stopping production, an `OWNERS` entry `'xemaya-dev': B60` (one card, beside the
-   isolated Strata unit as `comfyui` is) would do; ComfyUI and marrow-qa could not use the B60 meanwhile. Rollback:
-   remove the entry. Not needed for full-model tests, which take the whole host.
+1. **Another GPU window** after the DSA attention rewrite (parity-tested on the CPU device first), to measure it and
+   to test longer contexts and the serve path. Same procedure as windows 1 and 2.
+2. For kernel-only tests without stopping production, an `OWNERS` entry `'xemaya-dev': B60` would do (ComfyUI and
+   marrow-qa could not use the B60 meanwhile). Rollback: remove the entry.
 
 ## Notes
 

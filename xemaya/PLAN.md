@@ -48,9 +48,9 @@ oneAPI. intel/llvm DPC++ 7+ still works.
 |---|---|---|
 | 1 | Foundation: repo, history, licences, icpx build, CPU-device kernel testing | done |
 | 2 | Upstream Strata v0.2.8 -> v0.2.12: `serve/` correctness (tool calls, request lifecycle, Anthropic route) | tool calls done; lifecycle pending |
-| 3 | Native GLM-5.3-Flash: Maya-S v2 (IQ2_XXS) on the Arc cards, output checked against llama.cpp | ready; blocked on GPU access (see STATUS) |
+| 3 | Native GLM-5.3-Flash: Maya-S v2 (IQ2_XXS) on the Arc cards, output checked against llama.cpp | runs on B70+B65+B60, 16/16 tokens match (2026-11-09); tuning |
 | 4 | Native DeepSeek-V4.1-Flash: PlainModel `deepseek41` block, SYCL kernels with CPU-device parity tests | spec, manifest, kernels done; block next |
-| 5 | Performance and reliability: decode/prefill, expert residency, PCIe, multi-GPU scheduling, API soak | not started |
+| 5 | Performance and reliability: decode/prefill, expert residency, PCIe, multi-GPU scheduling, API soak | GLM measured (STATUS); DSA attention kernel next |
 
 ### Milestone 3: GLM-5.3-Flash
 

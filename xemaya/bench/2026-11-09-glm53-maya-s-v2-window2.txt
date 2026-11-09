@@ -1,0 +1,237 @@
+# XeMaya GPU window 2, 2026-11-09 15:39-16:13 UTC: GLM-5.3-Flash Maya-S v2 IQ2_XXS on Zability (B70 + B65 + B60).
+# Raw lines from logs/window2 (bench-*.err/.meta, phase_stats.py, the gpu_window.sh steps). Engine: build-engine at this commit's parent plus the changes it records.
+
+## gpu_window.sh (correctness)
+== 15:41:24 start
+SYCL0: 30 GiB free, plan needs 28 GiB
+SYCL1: 31 GiB free, plan needs 28 GiB
+SYCL2: 23 GiB free, plan needs 20 GiB
+PREFLIGHT OK
+prompt 785,2326,1429,2989,6708,304,279,10121,315,15367,525; reference 5810,6589,11,18895,22929,11,323,32927,382,69249,1447,785,2326,1429,2989,6708
+== 15:41:25 2. Maya-S v2 on the three cards, forced along the reference, logits of every step
+strata plain: a layer split: Intel(R) Arc(TM) Pro B70 Graphics blocks 0..19, Intel(R) Arc(TM) Pro B65 Graphics blocks 20..37, Intel(R) Arc(TM) Pro B60 Graphics blocks 38..44
+strata (glm5-next): prompt matrix products on oneMath (oneMKL), XeStrata's own kernels (XMX) for the rest; the experts' in int8 (XMX)
+strata (glm5-next): load 95.0 s, prompt 11 tokens 49.18 s (0.2 tok/s), 15 generated 58.80 s (0.26 tok/s); VRAM tier 9819 of 9819 slots filled, 87.5% of routed experts hit, 225 swaps
+strata (glm5-next): below the VRAM tier: 0 routed entries read over PCIe; experts taken from RAM 507, from the files 621 (77665.7 MB)
+VRAM after: B65 0.6 GiB | B60 0.6 GiB | B70 0.6 GiB
+forced run: 16 steps, vocabulary 154880
+ step  ref token       margin  XeMaya top1     ref lp   XeMaya lp
+    0    5810 ' natural'    1.103    5810 ok         -0.866    -0.832
+    1    6589 ' selection'  7.239    6589 ok         -0.004    -0.004
+    2      11 ','           4.079      11 ok         -0.034    -0.034
+    3   18895 ' genetic'    0.012   18895 ok         -1.552    -1.153
+    4   22929 ' variation'  4.218   22929 ok         -0.049    -0.067
+    5      11 ','           3.260      11 ok         -0.046    -0.039
+    6     323 ' and'        6.595     323 ok         -0.004    -0.004
+    7   32927 ' adaptation  0.303   32927 ok         -0.900    -1.005
+    8     382 '.\n\n'       0.242     382 ok         -0.629    -0.648
+    9   69249 'Explanation  2.601   69249 ok         -0.158    -0.173
+   10    1447 ':\n\n'       1.035    1447 ok         -0.311    -0.299
+   11     785 'The'         1.738     785 ok         -0.304    -0.287
+   12    2326 ' three'      2.163    2326 ok         -0.174    -0.161
+   13    1429 ' most'       5.536    1429 ok         -0.008    -0.006
+   14    2989 ' important' 10.108    2989 ok         -0.000    -0.000
+   15    6708 ' ideas'      7.537    6708 ok         -0.002    -0.001
+forced: top-1 equals the reference at 16 of 16 steps; misses outside near-ties []; median |d logprob| 0.013, max 0.399
+PASS
+== 15:44:49 3. free greedy run, 128 tokens, no drafts
+strata plain: adaptive tier every 16 tokens: the CPU pool took 49% of the verify windows (a round every window from 30%, not while the experts are read from the files; --adapt-every sets it)
+strata (glm5-next): load 53.3 s, prompt 11 tokens 1.66 s (6.6 tok/s), 127 generated 10.17 s (12.49 tok/s); VRAM tier 9819 of 9819 slots filled, 90.7% of routed experts hit, 1106 swaps
+strata (glm5-next): below the VRAM tier: 0 routed entries read over PCIe; experts taken from RAM 2426, from the files 2443 (90367.7 MB)
+free run: first 16 tokens; identical to the reference
+free run tokens: [5810, 6589, 11, 18895, 22929, 11, 323, 32927, 382, 69249, 1447, 785, 2326, 1429, 2989, 6708]
+PASS
+== 15:45:56 4. iq_parity on the fixtures, one card each, in parallel (reported, not a stop)
+iq_parity level_zero:0 rc=0 last: iq_parity: 0 failures
+iq_parity level_zero:2 rc=0 last: iq_parity: 0 failures
+iq_parity level_zero:1 rc=0 last: iq_parity: 0 failures
+== 15:46:13 5. speed with the MTP layer's drafts (--spec 3), 128 tokens
+strata (glm5-next): load 54.2 s, prompt 11 tokens 2.23 s (4.9 tok/s), 127 generated 9.14 s (13.89 tok/s); VRAM tier 9756 of 9756 slots filled, 89.2% of routed experts hit, 1182 swaps
+strata (glm5-next): below the VRAM tier: 0 routed entries read over PCIe; experts taken from RAM 2443, from the files 3192 (97285.8 MB)
+strata (glm5-next): 50 windows checked 98 drafts, accepted 77 (78.6%), 2.54 tokens a window; a window 162.62 ms, its drafts 19.53 ms
+spec run: the same 128 tokens as the free run
+== 15:47:20 done; VRAM: B65 0.6 GiB | B60 0.6 GiB | B70 0.6 GiB
+
+## p2377-spec0
+name=p2377-spec0 rc=0 start=1794239285.828687046 end=1794239375.225790587
+strata plain: --layer-split auto: Intel(R) Arc(TM) Pro B70 Graphics, 27.7 GiB for experts, 28.7 GB/s from the host: 17 MoE layers
+strata plain: --layer-split auto: Intel(R) Arc(TM) Pro B65 Graphics, 27.7 GiB for experts, 28.4 GB/s from the host: 18 MoE layers
+strata plain: --layer-split auto: Intel(R) Arc(TM) Pro B60 Graphics, 19.6 GiB for experts, 7.0 GB/s from the host: 7 MoE layers
+strata plain: the experts need 80.1 GiB of RAM and 95.7 GiB beside them, 59.0 GiB is available: read in place
+strata plain: 17 MoE layers x 288 experts, 3825 VRAM slots (225 a layer, 25.42 GiB), 15 CPU workers, 26998 MiB free before the tier
+strata plain: 18 MoE layers x 288 experts, 3978 VRAM slots (221 a layer, 25.98 GiB), 15 CPU workers, 27603 MiB free before the tier
+strata plain: 7 MoE layers x 288 experts, 2016 VRAM slots (288 a layer, 13.73 GiB), 15 CPU workers, 20882 MiB free before the tier
+strata plain: a layer split: Intel(R) Arc(TM) Pro B70 Graphics blocks 0..19, Intel(R) Arc(TM) Pro B65 Graphics blocks 20..37, Intel(R) Arc(TM) Pro B60 Graphics blocks 38..44
+strata (glm5-next): load 53.4 s, prompt 2377 tokens 25.82 s (92.1 tok/s), 127 generated 9.42 s (13.48 tok/s); VRAM tier 9819 of 9819 slots filled, 92.6% of routed experts hit, 959 swaps
+strata (glm5-next): below the VRAM tier: 0 routed entries read over PCIe; experts taken from RAM 2771, from the files 5556 (134028.9 MB)
+  decode     9.4 s | B70 compute  54.6% VRAM  29.6 GiB | B65 compute  65.9% VRAM  29.5 GiB | B60 compute  44.4% VRAM  21.1 GiB | RAM avail min 70.9 GiB, page cache 66.7 GiB, NVMe read 0.50 GB (0.05 GB/s)
+  prompt    25.8 s | B70 compute  33.2% VRAM  29.5 GiB | B65 compute  40.8% VRAM  29.5 GiB | B60 compute  16.6% VRAM  21.1 GiB | RAM avail min 71.0 GiB, page cache 66.7 GiB, NVMe read 17.43 GB (0.68 GB/s)
+  load      53.4 s | B70 compute  34.1% VRAM  29.5 GiB | B65 compute  35.9% VRAM  29.5 GiB | B60 compute  15.0% VRAM  21.1 GiB | RAM avail min 71.9 GiB, page cache 68.4 GiB, NVMe read 84.56 GB (1.58 GB/s)
+
+## dec-prof
+name=dec-prof rc=0 start=1794239438.523004473 end=1794239506.856410646 nvme_read_GB=92.93 args=--layer-split auto --max-context 4096 --max-new 128 --spec 0
+strata plain: --layer-split auto: Intel(R) Arc(TM) Pro B70 Graphics, 27.7 GiB for experts, 28.5 GB/s from the host: 17 MoE layers
+strata plain: --layer-split auto: Intel(R) Arc(TM) Pro B65 Graphics, 27.7 GiB for experts, 28.6 GB/s from the host: 18 MoE layers
+strata plain: --layer-split auto: Intel(R) Arc(TM) Pro B60 Graphics, 19.6 GiB for experts, 7.0 GB/s from the host: 7 MoE layers
+strata plain: the experts need 80.1 GiB of RAM and 95.7 GiB beside them, 59.0 GiB is available: read in place
+strata plain: 17 MoE layers x 288 experts, 3825 VRAM slots (225 a layer, 25.42 GiB), 15 CPU workers, 26998 MiB free before the tier
+strata plain: 18 MoE layers x 288 experts, 3978 VRAM slots (221 a layer, 25.98 GiB), 15 CPU workers, 27603 MiB free before the tier
+strata plain: 7 MoE layers x 288 experts, 2016 VRAM slots (288 a layer, 13.73 GiB), 15 CPU workers, 20882 MiB free before the tier
+strata plain: a layer split: Intel(R) Arc(TM) Pro B70 Graphics blocks 0..19, Intel(R) Arc(TM) Pro B65 Graphics blocks 20..37, Intel(R) Arc(TM) Pro B60 Graphics blocks 38..44
+moe window times: 320 windows, 4487 rings: a ring waited 0.942 ms and was answered in 0.762 ms; after the last ring 0.024 ms a window
+strata (glm5-next): load 53.5 s, prompt 11 tokens 3.42 s (3.2 tok/s), 127 generated 10.63 s (11.95 tok/s); VRAM tier 9819 of 9819 slots filled, 90.7% of routed experts hit, 1106 swaps
+strata (glm5-next): below the VRAM tier: 0 routed entries read over PCIe; experts taken from RAM 2426, from the files 2443 (90388.7 MB)
+
+## dec-split2035
+name=dec-split2035 rc=0 start=1794239550.698474838 end=1794239619.767481241 nvme_read_GB=94.51 args=--layer-split 20,35 --max-context 4096 --max-new 128 --spec 0
+strata plain: the experts need 80.1 GiB of RAM and 95.7 GiB beside them, 59.0 GiB is available: read in place
+strata plain: 17 MoE layers x 288 experts, 3825 VRAM slots (225 a layer, 25.42 GiB), 15 CPU workers, 27000 MiB free before the tier
+strata plain: 15 MoE layers x 288 experts, 4035 VRAM slots (269 a layer, 26.35 GiB), 15 CPU workers, 28020 MiB free before the tier
+strata plain: 10 MoE layers x 288 experts, 2830 VRAM slots (283 a layer, 19.03 GiB), 15 CPU workers, 20466 MiB free before the tier
+strata plain: a layer split: Intel(R) Arc(TM) Pro B70 Graphics blocks 0..19, Intel(R) Arc(TM) Pro B65 Graphics blocks 20..34, Intel(R) Arc(TM) Pro B60 Graphics blocks 35..44
+moe window times: 320 windows, 4484 rings: a ring waited 0.964 ms and was answered in 0.302 ms; after the last ring 0.018 ms a window
+strata (glm5-next): load 58.6 s, prompt 11 tokens 1.37 s (8.0 tok/s), 127 generated 7.87 s (16.14 tok/s); VRAM tier 10690 of 10690 slots filled, 93.6% of routed experts hit, 781 swaps
+strata (glm5-next): below the VRAM tier: 0 routed entries read over PCIe; experts taken from RAM 2794, from the files 775 (86244.7 MB)
+
+## p2377-1935-spec0
+name=p2377-1935-spec0 rc=0 start=1794239641.673168794 end=1794239734.902381569 nvme_read_GB=102.72 args=--layer-split 19,35 --max-context 4096 --max-new 128 --spec 0
+strata plain: the experts need 80.1 GiB of RAM and 95.7 GiB beside them, 59.0 GiB is available: read in place
+strata plain: 16 MoE layers x 288 experts, 3840 VRAM slots (240 a layer, 25.55 GiB), 15 CPU workers, 27133 MiB free before the tier
+strata plain: 16 MoE layers x 288 experts, 4016 VRAM slots (251 a layer, 26.23 GiB), 15 CPU workers, 27887 MiB free before the tier
+strata plain: 10 MoE layers x 288 experts, 2830 VRAM slots (283 a layer, 19.03 GiB), 15 CPU workers, 20466 MiB free before the tier
+strata plain: a layer split: Intel(R) Arc(TM) Pro B70 Graphics blocks 0..18, Intel(R) Arc(TM) Pro B65 Graphics blocks 19..34, Intel(R) Arc(TM) Pro B60 Graphics blocks 35..44
+strata (glm5-next): load 58.9 s, prompt 2377 tokens 23.88 s (99.5 tok/s), 127 generated 9.19 s (13.82 tok/s); VRAM tier 10686 of 10686 slots filled, 95.0% of routed experts hit, 703 swaps
+strata (glm5-next): below the VRAM tier: 0 routed entries read over PCIe; experts taken from RAM 2968, from the files 3527 (125035.7 MB)
+  decode     9.2 s | B70 compute  53.2% VRAM  29.5 GiB | B65 compute  61.7% VRAM  29.5 GiB | B60 compute  44.8% VRAM  21.9 GiB | RAM avail min 71.1 GiB, page cache 66.7 GiB, NVMe read 0.26 GB (0.03 GB/s)
+  prompt    23.9 s | B70 compute  25.8% VRAM  29.5 GiB | B65 compute  38.8% VRAM  29.5 GiB | B60 compute  26.3% VRAM  21.9 GiB | RAM avail min 71.2 GiB, page cache 66.7 GiB, NVMe read 9.17 GB (0.38 GB/s)
+  load      58.9 s | B70 compute  31.9% VRAM  29.5 GiB | B65 compute  31.9% VRAM  29.4 GiB | B60 compute  19.8% VRAM  21.9 GiB | RAM avail min 71.8 GiB, page cache 67.5 GiB, NVMe read 91.42 GB (1.55 GB/s)
+
+## p2377-1935-kvvram
+name=p2377-1935-kvvram rc=0 start=1794239745.780855213 end=1794239838.760788116 nvme_read_GB=103.46 args=--layer-split 19,35 --max-context 4096 --max-new 128 --spec 0 --kv-ram off
+strata plain: the experts need 80.1 GiB of RAM and 95.7 GiB beside them, 59.0 GiB is available: read in place
+strata plain: 16 MoE layers x 288 experts, 3840 VRAM slots (240 a layer, 25.55 GiB), 15 CPU workers, 27137 MiB free before the tier
+strata plain: 16 MoE layers x 288 experts, 4016 VRAM slots (251 a layer, 26.23 GiB), 15 CPU workers, 27891 MiB free before the tier
+strata plain: 10 MoE layers x 288 experts, 2830 VRAM slots (283 a layer, 19.03 GiB), 15 CPU workers, 20474 MiB free before the tier
+strata plain: a layer split: Intel(R) Arc(TM) Pro B70 Graphics blocks 0..18, Intel(R) Arc(TM) Pro B65 Graphics blocks 19..34, Intel(R) Arc(TM) Pro B60 Graphics blocks 35..44
+moe window times: 320 windows, 4484 rings: a ring waited 1.459 ms and was answered in 0.120 ms; after the last ring 0.013 ms a window
+strata (glm5-next): load 58.6 s, prompt 2377 tokens 23.70 s (100.3 tok/s), 127 generated 9.44 s (13.45 tok/s); VRAM tier 10686 of 10686 slots filled, 95.0% of routed experts hit, 703 swaps
+strata (glm5-next): below the VRAM tier: 0 routed entries read over PCIe; experts taken from RAM 2968, from the files 3527 (125035.7 MB)
+  decode     9.4 s | B70 compute  44.9% VRAM  29.5 GiB | B65 compute  47.9% VRAM  29.5 GiB | B60 compute  40.7% VRAM  21.9 GiB | RAM avail min 70.9 GiB, page cache 66.7 GiB, NVMe read 0.28 GB (0.03 GB/s)
+  prompt    23.7 s | B70 compute  28.3% VRAM  29.5 GiB | B65 compute  38.5% VRAM  29.5 GiB | B60 compute  25.0% VRAM  21.9 GiB | RAM avail min 71.1 GiB, page cache 66.8 GiB, NVMe read 9.78 GB (0.41 GB/s)
+  load      58.6 s | B70 compute   8.3% VRAM  29.5 GiB | B65 compute  32.0% VRAM  29.4 GiB | B60 compute  28.2% VRAM  21.9 GiB | RAM avail min 72.3 GiB, page cache 67.5 GiB, NVMe read 90.49 GB (1.54 GB/s)
+
+## p2377-1935-spec3
+name=p2377-1935-spec3 rc=0 start=1794239855.887013802 end=1794239950.034196411 nvme_read_GB=107.36 args=--layer-split 19,35 --max-context 4096 --max-new 128 --spec 3
+strata plain: the experts need 82.6 GiB of RAM and 95.7 GiB beside them, 59.0 GiB is available: read in place
+strata plain: 16 MoE layers x 288 experts, 3808 VRAM slots (238 a layer, 25.33 GiB), 15 CPU workers, 27001 MiB free before the tier
+strata plain: 16 MoE layers x 288 experts, 4000 VRAM slots (250 a layer, 26.12 GiB), 15 CPU workers, 27782 MiB free before the tier
+strata plain: 11 MoE layers x 288 experts, 2706 VRAM slots (246 a layer, 18.63 GiB), 15 CPU workers, 20068 MiB free before the tier
+strata plain: a layer split: Intel(R) Arc(TM) Pro B70 Graphics blocks 0..18, Intel(R) Arc(TM) Pro B65 Graphics blocks 19..34, Intel(R) Arc(TM) Pro B60 Graphics blocks 35..44
+strata (glm5-next): load 59.1 s, prompt 2377 tokens 25.76 s (92.3 tok/s), 127 generated 7.95 s (15.97 tok/s); VRAM tier 10507 of 10514 slots filled, 93.4% of routed experts hit, 951 swaps
+strata (glm5-next): below the VRAM tier: 0 routed entries read over PCIe; experts taken from RAM 3215, from the files 4797 (135235.0 MB)
+strata (glm5-next): 53 windows checked 106 drafts, accepted 74 (69.8%), 2.40 tokens a window; a window 125.85 ms, its drafts 23.38 ms
+  decode     8.0 s | B70 compute  50.4% VRAM  29.5 GiB | B65 compute  59.7% VRAM  29.5 GiB | B60 compute  58.0% VRAM  22.0 GiB | RAM avail min 69.5 GiB, page cache 66.8 GiB, NVMe read 0.48 GB (0.06 GB/s)
+  prompt    25.8 s | B70 compute  26.1% VRAM  29.5 GiB | B65 compute  36.8% VRAM  29.5 GiB | B60 compute  25.7% VRAM  22.0 GiB | RAM avail min 69.7 GiB, page cache 66.9 GiB, NVMe read 15.31 GB (0.59 GB/s)
+  load      59.1 s | B70 compute  24.6% VRAM  29.5 GiB | B65 compute  31.6% VRAM  29.4 GiB | B60 compute  28.3% VRAM  21.9 GiB | RAM avail min 71.8 GiB, page cache 68.5 GiB, NVMe read 90.53 GB (1.53 GB/s)
+
+## p2377-auto2-spec0
+name=p2377-auto2-spec0 rc=0 start=1794240047.278136303 end=1794240140.118859420 nvme_read_GB=103.73 args=--layer-split auto --max-context 4096 --max-new 128 --spec 0
+strata plain: --layer-split auto: Intel(R) Arc(TM) Pro B70 Graphics, 27.7 GiB for experts, 28.7 GB/s from the host: 16 MoE layers
+strata plain: --layer-split auto: Intel(R) Arc(TM) Pro B65 Graphics, 27.7 GiB for experts, 28.6 GB/s from the host: 17 MoE layers
+strata plain: --layer-split auto: Intel(R) Arc(TM) Pro B60 Graphics, 19.6 GiB for experts, 7.0 GB/s from the host: 9 MoE layers
+strata plain: the experts need 80.1 GiB of RAM and 95.7 GiB beside them, 59.0 GiB is available: read in place
+strata plain: 16 MoE layers x 288 experts, 3840 VRAM slots (240 a layer, 25.55 GiB), 15 CPU workers, 27130 MiB free before the tier
+strata plain: 17 MoE layers x 288 experts, 3995 VRAM slots (235 a layer, 26.09 GiB), 15 CPU workers, 27754 MiB free before the tier
+strata plain: 9 MoE layers x 288 experts, 2592 VRAM slots (288 a layer, 17.49 GiB), 15 CPU workers, 20598 MiB free before the tier
+strata plain: a layer split: Intel(R) Arc(TM) Pro B70 Graphics blocks 0..18, Intel(R) Arc(TM) Pro B65 Graphics blocks 19..35, Intel(R) Arc(TM) Pro B60 Graphics blocks 36..44
+strata (glm5-next): load 57.3 s, prompt 2377 tokens 25.59 s (92.9 tok/s), 127 generated 9.16 s (13.87 tok/s); VRAM tier 10427 of 10427 slots filled, 94.5% of routed experts hit, 772 swaps
+strata (glm5-next): below the VRAM tier: 0 routed entries read over PCIe; experts taken from RAM 2813, from the files 4118 (126760.4 MB)
+  decode     9.2 s | B70 compute  55.6% VRAM  29.5 GiB | B65 compute  74.3% VRAM  29.5 GiB | B60 compute  41.3% VRAM  21.7 GiB | RAM avail min 70.8 GiB, page cache 66.8 GiB, NVMe read 0.23 GB (0.03 GB/s)
+  prompt    25.6 s | B70 compute  28.6% VRAM  29.5 GiB | B65 compute  42.1% VRAM  29.5 GiB | B60 compute  19.1% VRAM  21.6 GiB | RAM avail min 70.9 GiB, page cache 66.8 GiB, NVMe read 13.21 GB (0.52 GB/s)
+  load      57.3 s | B70 compute   5.0% VRAM  29.5 GiB | B65 compute  33.6% VRAM  29.4 GiB | B60 compute  16.3% VRAM  21.6 GiB | RAM avail min 71.7 GiB, page cache 68.5 GiB, NVMe read 89.51 GB (1.56 GB/s)
+
+## p2377-2gpu-spec0
+name=p2377-2gpu-spec0 rc=0 start=1794240155.950451273 end=1794240237.360970669 nvme_read_GB=105.33 args=--layer-split auto --max-context 4096 --max-new 64 --spec 0
+strata plain: --layer-split auto: Intel(R) Arc(TM) Pro B70 Graphics, 27.7 GiB for experts, 28.7 GB/s from the host: 21 MoE layers
+strata plain: --layer-split auto: Intel(R) Arc(TM) Pro B65 Graphics, 27.3 GiB for experts, 28.6 GB/s from the host: 21 MoE layers
+strata plain: the experts need 80.1 GiB of RAM and 71.8 GiB beside them, 59.0 GiB is available: read in place
+strata plain: 21 MoE layers x 288 experts, 3759 VRAM slots (179 a layer, 24.90 GiB), 15 CPU workers, 26501 MiB free before the tier
+strata plain: 21 MoE layers x 288 experts, 3801 VRAM slots (181 a layer, 25.18 GiB), 15 CPU workers, 26752 MiB free before the tier
+strata plain: a layer split: Intel(R) Arc(TM) Pro B70 Graphics blocks 0..23, Intel(R) Arc(TM) Pro B65 Graphics blocks 24..44
+strata (glm5-next): load 47.8 s, prompt 2377 tokens 25.61 s (92.8 tok/s), 63 generated 5.05 s (12.48 tok/s); VRAM tier 7503 of 7560 slots filled, 76.7% of routed experts hit, 910 swaps
+strata (glm5-next): below the VRAM tier: 0 routed entries read over PCIe; experts taken from RAM 6352, from the files 5262 (108157.3 MB)
+  decode     5.0 s | B70 compute  39.4% VRAM  29.5 GiB | B65 compute  36.7% VRAM  29.6 GiB | B60 compute   0.0% VRAM   0.8 GiB | RAM avail min 57.0 GiB, page cache 54.8 GiB, NVMe read 0.12 GB (0.02 GB/s)
+  prompt    25.6 s | B70 compute  38.1% VRAM  29.5 GiB | B65 compute  54.6% VRAM  29.6 GiB | B60 compute   0.0% VRAM   0.8 GiB | RAM avail min 57.0 GiB, page cache 54.8 GiB, NVMe read 18.34 GB (0.72 GB/s)
+  load      47.8 s | B70 compute  31.8% VRAM  29.5 GiB | B65 compute  39.7% VRAM  29.5 GiB | B60 compute   0.0% VRAM   0.8 GiB | RAM avail min 59.2 GiB, page cache 55.3 GiB, NVMe read 81.69 GB (1.71 GB/s)
+
+## p2377-1gpu-spec0
+name=p2377-1gpu-spec0 rc=0 start=1794240245.568217469 end=1794240317.184242041 nvme_read_GB=111.06 args=--max-context 4096 --max-new 64 --spec 0
+strata plain: the experts need 80.1 GiB of RAM and 39.9 GiB beside them, 59.0 GiB is available: read in place
+strata plain: 42 MoE layers x 288 experts, 3234 VRAM slots (77 a layer, 21.42 GiB), 15 CPU workers, 23073 MiB free before the tier
+strata (glm5-next): load 33.5 s, prompt 2377 tokens 26.80 s (88.7 tok/s), 63 generated 10.25 s (6.15 tok/s); VRAM tier 3234 of 3234 slots filled, 41.8% of routed experts hit, 430 swaps
+strata (glm5-next): below the VRAM tier: 0 routed entries read over PCIe; experts taken from RAM 12795, from the files 9291 (93578.8 MB)
+  decode    10.2 s | B70 compute  99.2% VRAM  29.4 GiB | B65 compute   0.0% VRAM   0.8 GiB | B60 compute   0.0% VRAM   0.8 GiB | RAM avail min 42.1 GiB, page cache 38.9 GiB, NVMe read 7.03 GB (0.69 GB/s)
+  prompt    26.8 s | B70 compute  98.1% VRAM  29.4 GiB | B65 compute   0.0% VRAM   0.8 GiB | B60 compute   0.0% VRAM   0.8 GiB | RAM avail min 40.8 GiB, page cache 38.9 GiB, NVMe read 33.24 GB (1.24 GB/s)
+  load      33.5 s | B70 compute  58.3% VRAM  29.3 GiB | B65 compute   0.0% VRAM   0.8 GiB | B60 compute   0.0% VRAM   0.8 GiB | RAM avail min 42.4 GiB, page cache 40.1 GiB, NVMe read 68.18 GB (2.04 GB/s)
+
+## p2377-auto2-pprof
+name=p2377-auto2-pprof rc=0 start=1794240328.035623299 end=1794240414.029080228 nvme_read_GB=103.39 args=--layer-split auto --max-context 4096 --max-new 8 --spec 0
+strata plain: --layer-split auto: Intel(R) Arc(TM) Pro B70 Graphics, 27.7 GiB for experts, 28.6 GB/s from the host: 16 MoE layers
+strata plain: --layer-split auto: Intel(R) Arc(TM) Pro B65 Graphics, 27.7 GiB for experts, 28.4 GB/s from the host: 17 MoE layers
+strata plain: --layer-split auto: Intel(R) Arc(TM) Pro B60 Graphics, 19.6 GiB for experts, 7.0 GB/s from the host: 9 MoE layers
+strata plain: the experts need 80.1 GiB of RAM and 95.7 GiB beside them, 59.0 GiB is available: read in place
+strata plain: 16 MoE layers x 288 experts, 3840 VRAM slots (240 a layer, 25.55 GiB), 15 CPU workers, 27130 MiB free before the tier
+strata plain: 17 MoE layers x 288 experts, 3995 VRAM slots (235 a layer, 26.09 GiB), 15 CPU workers, 27754 MiB free before the tier
+strata plain: 9 MoE layers x 288 experts, 2592 VRAM slots (288 a layer, 17.49 GiB), 15 CPU workers, 20598 MiB free before the tier
+strata plain: a layer split: Intel(R) Arc(TM) Pro B70 Graphics blocks 0..18, Intel(R) Arc(TM) Pro B65 Graphics blocks 19..35, Intel(R) Arc(TM) Pro B60 Graphics blocks 36..44
+strata plain: GLM prompt of 2377 tokens: KDA 820.3 ms (projections 444.1, convolutions and gates 74.3, recurrence 171.5, output 130.4), DSA 2495.4, grouping 138.3, experts 2968.6, shared and dense FFN 245.2, staging 193.2, head 184.7, the rest 0.1; experts not in VRAM 1604, on the CPU 0 (0 rows)
+strata plain: GLM prompt of 2377 tokens: KDA 1154.6 ms (projections 625.1, convolutions and gates 72.1, recurrence 259.7, output 197.8), DSA 5660.0, grouping 221.0, experts 3280.6, shared and dense FFN 225.3, staging 115.1, head 6.2, the rest 0.1; experts not in VRAM 1718, on the CPU 0 (0 rows)
+strata plain: GLM prompt of 2377 tokens: KDA 674.5 ms (projections 365.9, convolutions and gates 42.2, recurrence 151.9, output 114.6), DSA 2248.9, grouping 119.0, experts 1562.2, shared and dense FFN 120.1, staging 191.5, head 31.2, the rest 0.1; experts not in VRAM 817, on the CPU 0 (0 rows)
+strata (glm5-next): load 57.9 s, prompt 2377 tokens 26.18 s (90.8 tok/s), 7 generated 0.72 s (9.76 tok/s); VRAM tier 10427 of 10427 slots filled, 91.2% of routed experts hit, 251 swaps
+strata (glm5-next): below the VRAM tier: 0 routed entries read over PCIe; experts taken from RAM 1249, from the files 3246 (119212.1 MB)
+
+## p2377-1935-logits
+name=p2377-1935-logits rc=0 start=1794240441.978168365 end=1794240531.702162649 nvme_read_GB=103.19 args=--layer-split 19,35 --max-context 4096 --max-new 64 --spec 0 --dump-logits /DATA/Projects/xemaya/logs/window2/p2377-logits.f32
+strata plain: the experts need 80.1 GiB of RAM and 95.7 GiB beside them, 59.0 GiB is available: read in place
+strata plain: 16 MoE layers x 288 experts, 3840 VRAM slots (240 a layer, 25.55 GiB), 15 CPU workers, 27133 MiB free before the tier
+strata plain: 16 MoE layers x 288 experts, 4016 VRAM slots (251 a layer, 26.23 GiB), 15 CPU workers, 27887 MiB free before the tier
+strata plain: 10 MoE layers x 288 experts, 2830 VRAM slots (283 a layer, 19.03 GiB), 15 CPU workers, 20466 MiB free before the tier
+strata plain: a layer split: Intel(R) Arc(TM) Pro B70 Graphics blocks 0..18, Intel(R) Arc(TM) Pro B65 Graphics blocks 19..34, Intel(R) Arc(TM) Pro B60 Graphics blocks 35..44
+strata (glm5-next): load 59.8 s, prompt 2377 tokens 24.49 s (97.1 tok/s), 63 generated 4.70 s (13.40 tok/s); VRAM tier 10686 of 10686 slots filled, 94.6% of routed experts hit, 475 swaps
+strata (glm5-next): below the VRAM tier: 0 routed entries read over PCIe; experts taken from RAM 2142, from the files 3228 (122577.9 MB)
+  decode     4.7 s | B70 compute  54.6% VRAM  29.5 GiB | B65 compute  48.2% VRAM  29.5 GiB | B60 compute  37.7% VRAM  21.9 GiB | RAM avail min 70.5 GiB, page cache 66.7 GiB, NVMe read 0.11 GB (0.02 GB/s)
+  prompt    24.5 s | B70 compute  25.8% VRAM  29.5 GiB | B65 compute  38.4% VRAM  29.5 GiB | B60 compute  25.1% VRAM  21.9 GiB | RAM avail min 70.8 GiB, page cache 66.9 GiB, NVMe read 9.72 GB (0.40 GB/s)
+  load      59.8 s | B70 compute  31.8% VRAM  29.5 GiB | B65 compute  17.5% VRAM  29.4 GiB | B60 compute  26.8% VRAM  21.9 GiB | RAM avail min 71.7 GiB, page cache 67.8 GiB, NVMe read 91.77 GB (1.53 GB/s)
+
+## s512-auto-spec0
+name=s512-auto-spec0 rc=0 start=1794240541.158846530 end=1794240632.827537638 nvme_read_GB=96.70 args=--layer-split auto --max-context 4096 --max-new 512 --spec 0
+strata plain: --layer-split auto: Intel(R) Arc(TM) Pro B70 Graphics, 27.7 GiB for experts, 28.7 GB/s from the host: 16 MoE layers
+strata plain: --layer-split auto: Intel(R) Arc(TM) Pro B65 Graphics, 27.7 GiB for experts, 28.6 GB/s from the host: 17 MoE layers
+strata plain: --layer-split auto: Intel(R) Arc(TM) Pro B60 Graphics, 19.6 GiB for experts, 7.0 GB/s from the host: 9 MoE layers
+strata plain: the experts need 80.1 GiB of RAM and 95.7 GiB beside them, 59.0 GiB is available: read in place
+strata plain: 16 MoE layers x 288 experts, 3840 VRAM slots (240 a layer, 25.55 GiB), 15 CPU workers, 27130 MiB free before the tier
+strata plain: 17 MoE layers x 288 experts, 3995 VRAM slots (235 a layer, 26.09 GiB), 15 CPU workers, 27754 MiB free before the tier
+strata plain: 9 MoE layers x 288 experts, 2592 VRAM slots (288 a layer, 17.49 GiB), 15 CPU workers, 20598 MiB free before the tier
+strata plain: a layer split: Intel(R) Arc(TM) Pro B70 Graphics blocks 0..18, Intel(R) Arc(TM) Pro B65 Graphics blocks 19..35, Intel(R) Arc(TM) Pro B60 Graphics blocks 36..44
+strata (glm5-next): load 57.6 s, prompt 11 tokens 3.72 s (3.0 tok/s), 511 generated 29.54 s (17.30 tok/s); VRAM tier 10427 of 10427 slots filled, 95.8% of routed experts hit, 1631 swaps
+strata (glm5-next): below the VRAM tier: 0 routed entries read over PCIe; experts taken from RAM 5317, from the files 3096 (97217.4 MB)
+  decode    29.5 s | B70 compute  51.9% VRAM  29.5 GiB | B65 compute  66.5% VRAM  29.5 GiB | B60 compute  48.8% VRAM  21.7 GiB | RAM avail min 71.0 GiB, page cache 66.8 GiB, NVMe read 4.97 GB (0.17 GB/s)
+  prompt     3.7 s | B70 compute   9.6% VRAM  29.5 GiB | B65 compute  76.0% VRAM  29.5 GiB | B60 compute  20.5% VRAM  21.6 GiB | RAM avail min 71.4 GiB, page cache 62.2 GiB, NVMe read 0.53 GB (0.14 GB/s)
+  load      57.6 s | B70 compute  32.2% VRAM  29.5 GiB | B65 compute  32.5% VRAM  29.4 GiB | B60 compute  20.4% VRAM  21.6 GiB | RAM avail min 71.5 GiB, page cache 66.9 GiB, NVMe read 90.58 GB (1.57 GB/s)
+
+## s512-auto-spec3
+name=s512-auto-spec3 rc=0 start=1794240633.357421960 end=1794240717.803986048 nvme_read_GB=100.35 args=--layer-split auto --max-context 4096 --max-new 512 --spec 3
+strata plain: --layer-split auto: Intel(R) Arc(TM) Pro B70 Graphics, 27.7 GiB for experts, 28.7 GB/s from the host: 17 MoE layers
+strata plain: --layer-split auto: Intel(R) Arc(TM) Pro B65 Graphics, 27.7 GiB for experts, 28.6 GB/s from the host: 17 MoE layers
+strata plain: --layer-split auto: Intel(R) Arc(TM) Pro B60 Graphics, 19.6 GiB for experts, 7.0 GB/s from the host: 8 MoE layers
+strata plain: the experts need 82.6 GiB of RAM and 95.7 GiB beside them, 59.0 GiB is available: read in place
+strata plain: 17 MoE layers x 288 experts, 3791 VRAM slots (223 a layer, 25.19 GiB), 15 CPU workers, 26866 MiB free before the tier
+strata plain: 17 MoE layers x 288 experts, 3978 VRAM slots (234 a layer, 25.98 GiB), 15 CPU workers, 27631 MiB free before the tier
+strata plain: 9 MoE layers x 288 experts, 2592 VRAM slots (288 a layer, 18.05 GiB), 15 CPU workers, 20351 MiB free before the tier
+strata plain: a layer split: Intel(R) Arc(TM) Pro B70 Graphics blocks 0..19, Intel(R) Arc(TM) Pro B65 Graphics blocks 20..36, Intel(R) Arc(TM) Pro B60 Graphics blocks 37..44
+strata (glm5-next): load 58.5 s, prompt 11 tokens 2.30 s (4.8 tok/s), 511 generated 22.32 s (22.90 tok/s); VRAM tier 10361 of 10361 slots filled, 94.9% of routed experts hit, 1942 swaps
+strata (glm5-next): below the VRAM tier: 0 routed entries read over PCIe; experts taken from RAM 5703, from the files 4586 (111657.5 MB)
+strata (glm5-next): 191 windows checked 381 drafts, accepted 320 (84.0%), 2.68 tokens a window; a window 104.28 ms, its drafts 12.34 ms
+  decode    22.3 s | B70 compute  42.2% VRAM  29.5 GiB | B65 compute  44.9% VRAM  29.5 GiB | B60 compute  33.3% VRAM  21.9 GiB | RAM avail min 70.0 GiB, page cache 66.8 GiB, NVMe read 7.51 GB (0.34 GB/s)
+  prompt     2.3 s | B70 compute  28.3% VRAM  29.5 GiB | B65 compute  58.6% VRAM  29.5 GiB | B60 compute  16.6% VRAM  21.9 GiB | RAM avail min 70.6 GiB, page cache 67.0 GiB, NVMe read 0.66 GB (0.29 GB/s)
+  load      58.5 s | B70 compute  29.0% VRAM  29.5 GiB | B65 compute  32.4% VRAM  29.5 GiB | B60 compute  25.9% VRAM  21.9 GiB | RAM avail min 71.2 GiB, page cache 67.6 GiB, NVMe read 88.70 GB (1.52 GB/s)

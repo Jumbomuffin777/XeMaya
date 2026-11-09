@@ -32,6 +32,7 @@ python3 -c "import json; print(','.join(map(str, json.load(open('$REF'))['tokens
 python3 -c "import json; print(','.join(map(str, json.load(open('$REF'))['prompt_ids'])))" > "$W/prompt.ids" || stop "prompt"
 echo "prompt $(cat $W/prompt.ids); reference $(cat $W/ref.ids)"
 
+if [ "${START:-1}" -le 1 ]; then
 echo "== $(date -u +%T) 1. kernel parity, one card each, in parallel"
 for d in 0 1 2; do
   ( for t in glm5_parity ds41_parity; do
@@ -41,6 +42,7 @@ for d in 0 1 2; do
 done
 wait
 grep -L "^PASS" $W/glm5_parity-l0-*.log $W/ds41_parity-l0-*.log | grep -q . && stop "a kernel test failed (above)"
+fi
 
 COMMON=(--native "$M" --tokens-file "$W/prompt.ids" --greedy --layer-split auto --max-context 4096)
 echo "== $(date -u +%T) 2. Maya-S v2 on the three cards, forced along the reference, logits of every step"
