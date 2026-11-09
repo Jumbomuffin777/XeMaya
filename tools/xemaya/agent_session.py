@@ -49,8 +49,6 @@ def stream(url, path, body, headers=None, cancel_after=None):
         line = r.readline()
         if not line:
             break
-        if first is None:
-            first = time.time() - t0
         line = line.decode().strip()
         if not line.startswith("data:"):
             continue
@@ -59,7 +57,14 @@ def stream(url, path, body, headers=None, cancel_after=None):
             done = True
             break
         try:
-            events.append(json.loads(data))
+            ev = json.loads(data)
+            events.append(ev)
+            # the first token: a delta that carries text, reasoning or a call (not the role chunk the server sends
+            # at once), or an Anthropic content delta
+            d = ((ev.get("choices") or [{}])[0].get("delta") or {}) if isinstance(ev, dict) else {}
+            if first is None and (d.get("content") or d.get("reasoning_content") or d.get("tool_calls") or
+                                  ev.get("type") == "content_block_delta"):
+                first = time.time() - t0
         except ValueError:
             ok = False
         if cancel_after is not None and len(events) >= cancel_after:
