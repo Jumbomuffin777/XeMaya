@@ -20,6 +20,7 @@
 // in every block and in the MTP layer: no experts, so none of the tiers, the CPU pool or the window protocol.
 #include "strata/core/plain_model.hpp"
 
+#include "strata/artifact/dequant.hpp"
 #include "strata/artifact/gguf_reader.hpp"
 #include "strata/core/device.hpp"
 #include "strata/core/expert_tier.hpp"
@@ -164,8 +165,11 @@ bool PlainModel::upload_f32(const GgufModel& m, const std::string& name, uint64_
                             std::string& err) {
     size_t at = 0;
     const TensorInfo* t = m.find(name, &at);
-    if (t == nullptr || (t->type != kF32 && t->type != kBF16) || t->elements() != elements || !m.in_bounds(*t, at)) {
-        err = "plain model: " + name + " is missing, not F32 or BF16 or not " + std::to_string(elements) + " values";
+    // Q8_0 too (XeMaya: Project Maya's GLM-5.3-Flash files keep indexer.proj in Q8_0), widened exactly on the host
+    constexpr int kQ8_0 = 8;
+    if (t == nullptr || (t->type != kF32 && t->type != kBF16 && !(t->type == kQ8_0 && elements % 32 == 0)) ||
+        t->elements() != elements || !m.in_bounds(*t, at)) {
+        err = "plain model: " + name + " is missing, not F32, BF16 or Q8_0, or not " + std::to_string(elements) + " values";
         return false;
     }
     const void* src = m.shard(at).tensor_data(*t);
@@ -177,6 +181,11 @@ bool PlainModel::upload_f32(const GgufModel& m, const std::string& name, uint64_
             const uint32_t u = (uint32_t) h[i] << 16;
             std::memcpy(&wide[i], &u, 4);
         }
+        src = wide.data();
+    } else if (t->type == kQ8_0) {
+        wide.resize(elements);
+        const auto* q = static_cast<const uint8_t*>(src);
+        for (uint64_t b = 0; b < elements / 32; ++b) strata::dequantize_q8_0(q + b * 34, wide.data() + b * 32);
         src = wide.data();
     }
     void* d = nullptr;
@@ -442,6 +451,22 @@ bool PlainModel::split_auto_points(std::string& err) {
         layer_b = std::max(layer_b, b);
     }
     const bool mtp = opt_.spec >= 2 && model_->find("blk." + std::to_string(s.n_layer) + ".nextn.eh_proj.weight") != nullptr;
+    // XeMaya: a routed block's mean bytes, its experts and the rest of its weights, for the whole layers a slow-link GPU
+    // takes (GLM-5.3-Flash Maya-S v2 on a B60: the largest layer at 80% of the room gave 7 layers where 10 fit, 283 of
+    // 288 experts each, and the B70 and B65 kept 77% of theirs)
+    double block_mean = 0;
+    {
+        std::vector<uint64_t> per((size_t) s.n_layer, 0);
+        for (size_t k = 0; k < model_->size(); ++k)
+            for (const TensorInfo& t : model_->shard(k).tensors()) {
+                if (t.name.rfind("blk.", 0) != 0) continue;
+                const long long l = std::strtoll(t.name.c_str() + 4, nullptr, 10);
+                if (l >= 0 && l < s.n_layer && s.layer_routes(l)) per[(size_t) l] += tensor_payload_bytes(t);
+            }
+        uint64_t sum = 0;
+        for (int64_t l = 0; l < s.n_layer; ++l) sum += s.layer_routes(l) ? per[(size_t) l] : 0;
+        block_mean = M > 0 ? (double) sum / (double) M : 0.0;
+    }
     std::vector<double> room((size_t) n, 0.0), link((size_t) n, 0.0);
     for (int d = 0; d < n; ++d) {
         const OnDevice on(split_devs_[(size_t) d]);
@@ -475,8 +500,11 @@ bool PlainModel::split_auto_points(std::string& err) {
     for (int d = 0; d < n; ++d) {
         const bool slow = d > 0 && link[0] > 0 && link[(size_t) d] < link[0] / 2 && layer_b > 0;
         if (!slow) { fast_room += room[(size_t) d]; continue; }
-        // (a fifth of the room for its blocks' own weights, K/V and buffers: the RTX 4070's tier took 8.4 of 9.6 GiB)
-        const int64_t whole = (int64_t) (room[(size_t) d] * 0.8 / (double) layer_b) - (d == n - 1 && mtp ? 1 : 0);
+        // whole blocks at their mean size (experts and the rest of the block) in 97% of the room; without that mean, a
+        // fifth of the room for the blocks' own weights, K/V and buffers (the RTX 4070's tier took 8.4 of 9.6 GiB)
+        const int64_t whole = (block_mean > 0 ? (int64_t) (room[(size_t) d] * 0.97 / block_mean)
+                                              : (int64_t) (room[(size_t) d] * 0.8 / (double) layer_b)) -
+                              (d == n - 1 && mtp ? 1 : 0);
         count[(size_t) d] = std::clamp<int64_t>(whole, 1, left - 1);
         left -= count[(size_t) d];
     }
