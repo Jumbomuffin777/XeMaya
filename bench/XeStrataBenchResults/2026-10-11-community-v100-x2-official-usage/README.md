@@ -9,8 +9,6 @@ Unlike the short custom tasks in PR #3, this uses the new `tools/bench_core.py`
 `ab_usage`, conversations, sampling and aggregation without changes.
 Upstream was faster in Japanese, English and coding on this machine.
 
-[日本語](README.ja.md)
-
 ## Results
 
 Medians of two rounds. Each conversation's throughput is total tokens / total time within a round,

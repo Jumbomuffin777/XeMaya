@@ -365,7 +365,7 @@ permission under GPL section 7, what goes in, and how to report).
 - **Upstream integration:** the changes of Strata up to 0.2.2 are carried over.
   Of the paths meant to be faster, those measured faster on the B70, the RTX 4070 or the RX 9060 XT
   are carried ([docs/XE.md](XE.md#integration-through-strata-022)).
-- **The README and docs:** the Japanese ones (README.ja.md, docs/*.ja.md) are written first, and the English ones (README.md, docs/*.md) are their translations.
+- **The README and docs:** XeStrata writes them in Japanese first; XeMaya keeps the English versions only (the Japanese originals are in the XeStrata repository).
 
 ## Credits
 

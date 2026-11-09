@@ -5,8 +5,6 @@ SPDX-License-Identifier: LGPL-3.0-or-later
 # Single V100 32 GB: follow-up measurement
 
 Single-GPU scores requested by the maintainer on PR #8.
-[日本語](README.ja.md)
-
 ## Results
 
 Medians of two rounds using official `ab_usage` and `ab_generate`.
