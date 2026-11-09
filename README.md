@@ -48,14 +48,16 @@ B60 24 GB, Intel oneAPI `icpx` 2026.2).
 | --- | --- |
 | Build | Core, tests, parity binaries and the full engine (GLM and DeepSeek kernels included) build with 0 errors |
 | Host tests | XeStrata's 13 host tests, plus `model_spec_test` and `ds41_manifest_test` |
-| GLM-5.3-Flash kernels | `glm5_parity`: 28/28 |
-| GLM Maya GGUFs | Maya-S v2 IQ2_XXS reads as `glm5-next`; every tensor type in it is supported |
+| GLM-5.3-Flash kernels | `glm5_parity`: 28/28 on the CPU device and on each Arc card (B70, B65, B60) |
+| GLM Maya GGUFs | Maya-S v2 IQ2_XXS reads as `glm5-next`. Loading it stops at its F32 mHC mixer weights (`hc_attn_fn`, `hc_ffn_fn`), which the engine's matrix-vector path does not take yet |
 | DeepSeek-V4.1 model files | All 1043 tensors of both ISTA-DASLab models match llama.cpp's shapes |
-| DeepSeek-V4.1 kernels | `ds41_parity`: 18/18 (router, mHC, compressor, Engram gate and hash, YaRN RoPE, indexer, top-k, sink attention) |
+| DeepSeek-V4.1 kernels | `ds41_parity`: 18/18 on the CPU device and on each Arc card (router, mHC, compressor, Engram gate and hash, YaRN RoPE, indexer, top-k, sink attention) |
+| Element-wise kernels | `elementwise_parity`: 0 failures on each Arc card |
 | Server | 14 newer Strata tool-call fixes ported; serve tests 930 passed, 0 failed |
 
-Not verified yet: the kernels have so far run on the CPU SYCL device, so the XMX and Level Zero paths are untested on
-real hardware, and no GLM or DeepSeek model has loaded on a GPU. Detailed notes: [xemaya/STATUS.md](xemaya/STATUS.md).
+The GLM and DeepSeek kernel tests passed on the Arc cards in a GPU window on 2026-11-09. Not verified yet: no GLM or
+DeepSeek model has generated on a GPU (Maya-S v2 needs F32 mHC mixer support first), and there is no llama.cpp
+reference output for Maya-S v2 yet. Detailed notes: [xemaya/STATUS.md](xemaya/STATUS.md).
 
 ## Roadmap
 
