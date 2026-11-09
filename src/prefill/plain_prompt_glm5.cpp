@@ -242,7 +242,12 @@ bool PlainModel::prompt_chunks_glm5(const int32_t* tokens, int64_t n, int64_t po
                         }
                         lat = g_lat_stage_;
                     }
-                    if (k::glm5_mla_attn_tiled_on())   // XeMaya: a chunk's tokens are work enough, no split
+                    const int kp_tail = s.idx_kpool_select_tail ? (int) s.idx_kpool : 0;
+                    if (k::glm5_mla_attn_xmx_on() &&   // XeMaya: the matrix engines, else the tiled kernel
+                        k::glm5_mla_attn_xmx(P.g_abs, lat, P.g_ids, g_cap_, P.g_steps, (int) H,
+                                             1.0f / std::sqrt((float) QK), T, P.g_lat, cs, kp_tail))
+                        ;
+                    else if (k::glm5_mla_attn_tiled_on())   // XeMaya: a chunk's tokens are work enough, no split
                         k::glm5_mla_attn_tiled(P.g_abs, lat, P.g_ids, g_cap_, P.g_steps, (int) H,
                                                1.0f / std::sqrt((float) QK), T, P.g_lat, nullptr, 0, cs,
                                                s.idx_kpool_select_tail ? (int) s.idx_kpool : 0);
@@ -371,7 +376,7 @@ bool PlainModel::prompt_chunks_glm5(const int32_t* tokens, int64_t n, int64_t po
                              "(%lld rows)\n",
                      (long long) n, stage_ms[5] + stage_ms[6] + stage_ms[7] + stage_ms[8], stage_ms[5], stage_ms[6],
                      stage_ms[7], stage_ms[8], stage_ms[1] + stage_ms[12] + stage_ms[13] + stage_ms[14] + stage_ms[15],
-                     stage_ms[12], stage_ms[13], stage_ms[14], stage_ms[15], k::glm5_mla_attn_tiled_on() ? " tiled" : "",
+                     stage_ms[12], stage_ms[13], stage_ms[14], stage_ms[15], k::glm5_mla_attn_xmx_on() ? " xmx" : k::glm5_mla_attn_tiled_on() ? " tiled" : "",
                      stage_ms[1], stage_ms[2], stage_ms[3], stage_ms[4], stage_ms[9], stage_ms[10], stage_ms[11],
                      (long long) rst.miss_n, (long long) rst.cpu_n, (long long) rst.cpu_rows);
     mtp_h_set_ = has_mtp_ && pos + n < opt_.max_cells;   // the trunk's last row is in mtp_h_ for spec_start

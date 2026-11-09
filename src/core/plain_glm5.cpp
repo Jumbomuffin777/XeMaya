@@ -550,13 +550,20 @@ void PlainModel::record_dsa(const GBlock& b, int T, strata::gpu::Stream cs) {
         if (g_lat_gather_ != nullptr) {   // --kv-ram: each token's cells from RAM once, the attention over them
             k::glm5_latent_gather(g_latent_[(size_t) d], g_ids_, g_cap_, g_steps_, T, tail, g_gather_stride_, g_lat_gather_,
                                   cs);
-            if (k::glm5_mla_attn_tiled_on())   // XeMaya: heads share the cells' tiles; split cells, merged
+            if (k::glm5_mla_attn_xmx_on() &&   // XeMaya: the matrix engines (decode windows too: 6x the tiled kernel)
+                k::glm5_mla_attn_xmx(g_abs_, g_lat_gather_, g_ids_, g_cap_, g_steps_, (int) H,
+                                     1.0f / std::sqrt((float) QK), T, g_lat_, cs, tail, g_gather_stride_))
+                ;
+            else if (k::glm5_mla_attn_tiled_on())   // XeMaya: heads share the cells' tiles; split cells, merged
                 k::glm5_mla_attn_tiled(g_abs_, g_lat_gather_, g_ids_, g_cap_, g_steps_, (int) H,
                                        1.0f / std::sqrt((float) QK), T, g_lat_, g_mla_scratch_, g_mla_scratch_floats_, cs,
                                        tail, g_gather_stride_);
             else
                 k::glm5_mla_attn(g_abs_, g_lat_gather_, g_ids_, g_cap_, g_steps_, (int) H, 1.0f / std::sqrt((float) QK),
                                  T, g_lat_, cs, tail, g_gather_stride_);
+        } else if (k::glm5_mla_attn_xmx_on() &&
+                   k::glm5_mla_attn_xmx(g_abs_, g_latent_[(size_t) d], g_ids_, g_cap_, g_steps_, (int) H,
+                                        1.0f / std::sqrt((float) QK), T, g_lat_, cs, tail)) {
         } else if (k::glm5_mla_attn_tiled_on()) {
             k::glm5_mla_attn_tiled(g_abs_, g_latent_[(size_t) d], g_ids_, g_cap_, g_steps_, (int) H,
                                    1.0f / std::sqrt((float) QK), T, g_lat_, g_mla_scratch_, g_mla_scratch_floats_, cs, tail);

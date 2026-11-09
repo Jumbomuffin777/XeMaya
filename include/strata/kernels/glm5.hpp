@@ -135,8 +135,18 @@ int64_t glm5_mla_attn_tiled_scratch(int64_t n_tokens, int n_heads);
 void glm5_mla_attn_tiled(const float* q, const uint16_t* latent, const int32_t* ids, int64_t cap, const int32_t* steps,
                          int n_heads, float scale, int64_t n_tokens, float* out, float* scratch, int64_t scratch_floats,
                          void* stream, int tail_kpool = 0, int64_t compact = 0);
-/// Whether PlainModel uses glm5_mla_attn_tiled: XEMAYA_MLA_ATTN=tiled (default ref until the Arc cards confirm it).
+/// Whether PlainModel uses glm5_mla_attn_tiled: XEMAYA_MLA_ATTN=tiled, or xmx (whose decode windows take the tiled
+/// kernel); unset, the XMX kernel's fallback.  XEMAYA_MLA_ATTN=ref keeps the original kernels everywhere.
 bool glm5_mla_attn_tiled_on();
+/// XeMaya: glm5_mla_attn on Xe's matrix engines (src/kernels/xe/glm5_mla_xmx.cpp): a token and 16 heads a work-group,
+/// the cells gathered 16 at a time into local memory as K and V, q and p as FP16 hi + lo (about 22 bits).  For prompt
+/// chunks.  Returns false, launching nothing, where the device has no FP16 XMX or too little local memory (the caller
+/// keeps another kernel).  n_heads a multiple of 16.
+bool glm5_mla_attn_xmx(const float* q, const uint16_t* latent, const int32_t* ids, int64_t cap, const int32_t* steps,
+                       int n_heads, float scale, int64_t n_tokens, float* out, void* stream, int tail_kpool = 0,
+                       int64_t compact = 0);
+/// XEMAYA_MLA_ATTN unset or xmx (the default since GPU window 3, 2026-11-09)
+bool glm5_mla_attn_xmx_on();
 
 /// The cells glm5_mla_attn reads for each token (its selection, then its unfinished pool's cells up to it) copied
 /// from `latent` [cells][L] into out [T][stride][L], in that order: one read of each over PCIe when the latent lives

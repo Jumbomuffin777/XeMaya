@@ -674,6 +674,14 @@ int run(const Case& k) {
     const std::string tag = std::string("mla_attn_tiled, ") + k.what + " (" + std::to_string(glm5_mla_attn_tiled_splits(T, k.H)) +
                             (sf > 0 ? " splits)" : " splits wanted, scratch none)");
     int bad = compare(tag.c_str(), got, ref, 2e-4);
+    if (k.H % 16 == 0) {   // the matrix engines' kernel, where the device has them
+        if (glm5_mla_attn_xmx(dq, dl, di, cap, ds, k.H, scale, T, dout, nullptr, k.kpool, stride)) {
+            strata::parity::copy_out(got.data(), dout, got.size());
+            bad += compare((std::string("mla_attn_xmx, ") + k.what).c_str(), got, ref, 2e-4);
+        } else {
+            std::printf("  %-34s skipped (no FP16 XMX on this device)\n", (std::string("mla_attn_xmx, ") + k.what).c_str());
+        }
+    }
     glm5_mla_attn(dq, dl, di, cap, ds, k.H, scale, T, dout, nullptr, k.kpool, stride);   // the original, same reference
     strata::parity::copy_out(got.data(), dout, got.size());
     bad += compare((std::string("mla_attn (original), ") + k.what).c_str(), got, ref, 2e-4);
@@ -743,10 +751,14 @@ int bench_mla(int64_t P) {
         void* st = strata::parity::stream();
         const double a = time_ms([&] { glm5_mla_attn(dq, dl, di, cap, ds, H, 0.0625f, T, dout, st); });
         const double b = time_ms([&] { glm5_mla_attn_tiled(dq, dl, di, cap, ds, H, 0.0625f, T, dout, dsc, sf, st); });
+        const bool xmx = glm5_mla_attn_xmx(dq, dl, di, cap, ds, H, 0.0625f, T, dout, st);
+        const double c = xmx ? time_ms([&] { glm5_mla_attn_xmx(dq, dl, di, cap, ds, H, 0.0625f, T, dout, st); }) : 0.0;
         const double gflop = cells * H * 2.0 * 2.0 * L / 1e9;   // scores and the weighted sum
-        std::printf("  %-30s original %9.3f ms (%6.0f GFLOP/s)   tiled %9.3f ms (%6.0f GFLOP/s)   %.2fx\n",
+        std::printf("  %-30s original %9.3f ms (%6.0f GFLOP/s)   tiled %9.3f ms (%6.0f GFLOP/s)   %.2fx",
                     (prompt ? "prompt chunk of " + std::to_string(T) + " tokens" : "decode window of " + std::to_string(T)).c_str(),
                     a, gflop / (a / 1e3), b, gflop / (b / 1e3), a / b);
+        if (xmx) std::printf("   xmx %9.3f ms (%6.0f GFLOP/s)   %.2fx", c, gflop / (c / 1e3), a / c);
+        std::printf("\n");
     }
     return 0;
 }

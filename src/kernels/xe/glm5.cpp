@@ -445,6 +445,18 @@ void glm5_idx_scores(const float* pooled, const float* q, const float* w, int n_
         throw core::DeviceError("glm5_idx_scores: " + std::to_string(n_heads) + " heads, " + std::to_string(max_blocks) +
                                 " blocks, " + std::to_string(n_tokens) + " tokens");
     const size_t gx = (size_t) ((max_blocks + SG - 1) / SG);
+    // XeMaya: the kernels take 32-bit ids, so a launch stays under 2^31 work-items: past it (a 4,096-token chunk over
+    // 64K cells is 2.3 billion) the tokens go in slices
+    const size_t per_token = gx * SG * WARP, most = (size_t) 0x7fffffff / per_token;
+    if (most < 1) throw core::DeviceError("glm5_idx_scores: " + std::to_string(max_blocks) + " blocks");
+    if ((size_t) n_tokens > most) {
+        for (int64_t t0 = 0; t0 < n_tokens; t0 += (int64_t) most) {
+            const int64_t n = std::min<int64_t>((int64_t) most, n_tokens - t0);
+            glm5_idx_scores(pooled, q + t0 * n_heads * D, w + t0 * n_heads, n_heads, steps + t0 * kStepCount, n,
+                            max_blocks, scores + t0 * max_blocks, stream);
+        }
+        return;
+    }
     const int H = n_heads;
     const auto event = queue_for(stream).parallel_for(
         sycl::nd_range<2>({(size_t) n_tokens, gx * SG * WARP}, {1, (size_t) SG * WARP}),
@@ -563,8 +575,8 @@ int64_t glm5_mla_attn_tiled_scratch(int64_t n_tokens, int n_heads) {
 
 bool glm5_mla_attn_tiled_on() {
     static const bool on = [] {
-        const char* v = std::getenv("XEMAYA_MLA_ATTN");
-        return v != nullptr && std::strcmp(v, "tiled") == 0;
+        const char* v = std::getenv("XEMAYA_MLA_ATTN");   // default xmx (window 3): its decode fallback is this
+        return v == nullptr || std::strcmp(v, "tiled") == 0 || std::strcmp(v, "xmx") == 0;
     }();
     return on;
 }
