@@ -6,12 +6,14 @@
 #include "strata/core/gpu.hpp"
 #include "strata/kernels/cpu/native_expert.hpp"
 #include "strata/kernels/draft_head.hpp"
+#include "strata/kernels/native_mmvq.hpp"
 #include "strata/kernels/verify_kernels.hpp"
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 #include <cstdlib>
 #include <thread>
 #include <vector>
@@ -135,10 +137,34 @@ bool DraftHeadInt2::build(int type, int64_t n_rows, int n_in, const std::functio
         err = "the draft head's rows are not whole groups of 128";
         return false;
     }
-    if (k::cpu::native_row_bytes(type, n_in) == 0) {
+    // XeMaya: a head in the engine's split row order (kNativeQ6KRows, kNativeQ8Rows: native_mmvq.hpp) goes back to
+    // GGUF order a row at a time for ggml's dequantizer (the ISTA-DASLab Qwen3.8 files' Q6_K head kept the whole head
+    // for every draft before this: "has no host dequantizer")
+    const int ftype = type == k::kNativeQ6KRows ? 14 : type == k::kNativeQ8Rows ? 8 : type;
+    const size_t frow = k::cpu::native_row_bytes(ftype, n_in);
+    if (frow == 0) {
         err = "the draft head's type has no host dequantizer";
         return false;
     }
+    auto gguf_order = [&](const uint8_t* src, uint8_t* dst) {
+        if (type == k::kNativeQ6KRows) {   // ql (128 a block), qh (64), scales (16), d (2) -> blocks of 210
+            const size_t nb = (size_t) n_in / 256;
+            const uint8_t *ql = src, *qh = ql + nb * 128, *sc = qh + nb * 64, *d = sc + nb * 16;
+            for (size_t b = 0; b < nb; ++b) {
+                std::memcpy(dst + b * 210, ql + b * 128, 128);
+                std::memcpy(dst + b * 210 + 128, qh + b * 64, 64);
+                std::memcpy(dst + b * 210 + 192, sc + b * 16, 16);
+                std::memcpy(dst + b * 210 + 208, d + b * 2, 2);
+            }
+        } else {                           // qs (32 a block), d (2) -> blocks of d, qs
+            const size_t nb = (size_t) n_in / 32;
+            const uint8_t *qs = src, *d = qs + nb * 32;
+            for (size_t b = 0; b < nb; ++b) {
+                std::memcpy(dst + b * 34, d + b * 2, 2);
+                std::memcpy(dst + b * 34 + 2, qs + b * 32, 32);
+            }
+        }
+    };
     const size_t rb = k::int2_row_bytes(n_in);
     std::vector<uint8_t> host((size_t) n_rows * rb);
     // the rows to floats (ggml's dequantizer) and to the int2 form, on a few threads
@@ -150,10 +176,13 @@ bool DraftHeadInt2::build(int type, int64_t n_rows, int n_in, const std::functio
     for (int t = 0; t < threads; ++t)
         pool.emplace_back([&] {
             std::vector<float> f((size_t) n_in);
+            std::vector<uint8_t> tmp(ftype != type ? frow : 0);
             constexpr int64_t kStep = 256;
             for (int64_t r0 = next.fetch_add(kStep); r0 < n_rows && !bad; r0 = next.fetch_add(kStep))
                 for (int64_t r = r0; r < std::min(n_rows, r0 + kStep); ++r) {
-                    if (!k::cpu::native_row_to_float(type, row(r), f.data(), n_in)) { bad = true; break; }
+                    const uint8_t* src = row(r);
+                    if (ftype != type) { gguf_order(src, tmp.data()); src = tmp.data(); }
+                    if (!k::cpu::native_row_to_float(ftype, src, f.data(), n_in)) { bad = true; break; }
                     k::int2_pack_rows(f.data(), 1, n_in, host.data() + (size_t) r * rb);
                 }
         });
