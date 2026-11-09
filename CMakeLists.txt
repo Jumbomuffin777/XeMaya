@@ -1302,6 +1302,11 @@ if(STRATA_NATIVE_EXPERTS)
   set_property(SOURCE src/kernels/cpu/iq_avx2.cpp APPEND PROPERTY COMPILE_DEFINITIONS ${_strata_avxvnni})
   target_link_libraries(strata_kernels_cpu PUBLIC ggml-cpu ggml-base)
   target_compile_definitions(strata_kernels_cpu PUBLIC STRATA_NATIVE_EXPERTS=1)
+  # XeMaya: DeepSeek-V4.1-Flash on the host in F32, the whole model (a deterministic reference for the engine's block;
+  # no GPU, no SYCL): ds41_host MODEL.gguf IDS OUT.f32, compared with llama.cpp by tools/xemaya/compare_ref.py --forced
+  add_executable(ds41_host src/reference/ds41_host.cpp)
+  target_link_libraries(ds41_host PRIVATE strata_artifact ggml-base Threads::Threads)
+  target_compile_options(ds41_host PRIVATE -O3 -mavx2 -mfma)
   if(STRATA_BUILD_TESTS)
     # the Q5_1 block dequantizer (a Q5_1 PLE table, upstream #651) against ggml's, synthetic blocks: no model, no GPU
     add_executable(dequant_q5_1_test tests/core/dequant_q5_1_test.cpp)
