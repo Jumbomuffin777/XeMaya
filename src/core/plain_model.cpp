@@ -432,7 +432,7 @@ bool PlainModel::load_arch(std::string& err) {
 // decode 12.0, 11.3 and 10.8 tok/s (2026-10-20).
 bool PlainModel::split_auto_points(std::string& err) {
     opt_.split_at.clear();
-    const int n = (int) split_devs_.size();
+    int n = (int) split_devs_.size();
     if (n < 2) return true;
     const ModelSpec& s = spec_;
     const int64_t M = s.n_moe_layers();
@@ -493,6 +493,37 @@ bool PlainModel::split_auto_points(std::string& err) {
         }
         strata::gpu::free(g);
         strata::gpu::free(h);
+    }
+    // XeMaya: a GPU whose host link is under half the first's (on Zability the B60 behind the chipset, whose one
+    // uplink the 5 GbE NICs, SATA and USB share) is left out of an automatic split unless the GPUs were named
+    // (--split-device) or XEMAYA_SLOW_LINK_GPUS=1: streaming the experts its VRAM misses kept that uplink full for
+    // minutes in 64K / 128K prompts, and the NIC beside it timed out twice and the host lost its network (2026-11-09)
+    static const bool slow_ok = [] {
+        const char* v = std::getenv("XEMAYA_SLOW_LINK_GPUS");
+        return v != nullptr && std::strcmp(v, "1") == 0;
+    }();
+    if (!slow_ok && opt_.split_devices.empty() && link[0] > 0) {
+        std::vector<int> devs;
+        std::vector<double> room2, link2;
+        for (int d = 0; d < n; ++d) {
+            if (d > 0 && link[(size_t) d] < link[0] / 2) {
+                std::fprintf(stderr, "strata plain: --layer-split auto leaves out %s (%.1f GB/s from the host, the first "
+                                     "GPU %.1f): a slow link's traffic can starve the devices beside it; "
+                                     "XEMAYA_SLOW_LINK_GPUS=1 or --split-device takes it\n",
+                             device_info(split_devs_[(size_t) d]).name.c_str(), link[(size_t) d] / 1e9, link[0] / 1e9);
+                continue;
+            }
+            devs.push_back(split_devs_[(size_t) d]);
+            room2.push_back(room[(size_t) d]);
+            link2.push_back(link[(size_t) d]);
+        }
+        if ((int) devs.size() != n) {
+            split_devs_ = devs;
+            room = room2;
+            link = link2;
+            n = (int) devs.size();
+            if (n < 2 || M < n) return true;
+        }
     }
     std::vector<int64_t> count((size_t) n, 0);
     int64_t left = M;

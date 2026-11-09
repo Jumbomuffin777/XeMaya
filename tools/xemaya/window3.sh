@@ -16,6 +16,8 @@
 #   5 engine, the faster attention, spec 3 (MTP drafts): ctx-2377, ctx-32k, the checkpoint with drafts
 #   6 the HTTP server (OpenAI / Anthropic routes): a coding agent's session, the checkpoint on; then off for 3 turns
 #   7 (optional, FIRST_PHASE=7) ctx-128k
+# SAFETY (2026-11-09): the B60 is left out of automatic splits (its chipset uplink is the NICs'); no 128K or sustained
+# B60 streaming without the owner's say; every job runs under safety_guard.sh.
 set -u
 X=/DATA/Projects/xemaya; R=$X/XeMaya; W=$X/logs/window3; P=$X/prompts; REF=$R/xemaya/reference
 M=/mnt/ai/models/peasantsmith/GLM-5.3-Flash-Maya-GGUF/Maya-S-v2-IQ2_XXS/GLM-5.3-Flash-Maya-S-v2-IQ2_XXS-00001-of-00003.gguf
@@ -24,7 +26,10 @@ FIRST=${1:-1}
 mkdir -p $W
 set +u; source /opt/intel/oneapi/setvars.sh --force >/dev/null 2>&1; set -u
 export ZES_ENABLE_SYSMAN=1 SYCL_CACHE_PERSISTENT=1
-cap() { systemd-run --user --scope -q -p MemoryMax=$1 -p MemorySwapMax=0 nice -n 5 "${@:2}"; }
+# every GPU job under the safety guard (tools/xemaya/safety_guard.sh): stopped at a NIC timeout, a GPU reset or fault,
+# an OOM kill, a lost gateway or low memory (2026-11-09: the host lost its network in window 3)
+cap() { systemd-run --user --scope -q -p MemoryMax=$1 -p MemorySwapMax=0 nice -n 5 \
+    $R/tools/xemaya/safety_guard.sh --log $W/safety_guard.log -- "${@:2}"; }
 stop() { echo "== $(date -u +%T) STOP: $*"; exit 1; }
 say() { echo "== $(date -u +%T) $*"; }
 plan() { python3 -c "import json,sys; print(json.dumps({'jobs': json.loads(sys.argv[1])}))" "$1"; }
@@ -130,9 +135,12 @@ EOF
     files=6; [ $ck = 0 ] && files=3
     timeout 3600 $X/venv/bin/python $R/tools/xemaya/agent_session.py --url http://127.0.0.1:18990 --out $W/agent-$ck.json \
         --files $files 2>&1 | grep -v RuntimeWarning | tee $W/agent-$ck.txt
-    pkill -INT -f "[s]erve/server.py --engine strata --config $W/server-$ck.json"; sleep 15
-    pkill -9 -f "[s]erve/server.py --engine strata --config $W/server-$ck.json"; pkill -9 -f "[b]uild-engine/strata --serve"
-    sleep 3
+    # stopped gently (Ctrl-C, then SIGTERM), never SIGKILL: an engine killed in the middle of GPU work left engine resets
+    # and faults in the kernel log (window 3)
+    pkill -INT -f "[s]erve/server.py --engine strata --config $W/server-$ck.json"
+    for i in $(seq 1 60); do pgrep -f "[b]uild-engine/strata --serve" > /dev/null || break; sleep 1; done
+    pkill -TERM -f "[b]uild-engine/strata --serve"
+    for i in $(seq 1 60); do pgrep -f "[b]uild-engine/strata --serve" > /dev/null || break; sleep 1; done
   done
 fi
 if [ $FIRST -eq 7 ]; then

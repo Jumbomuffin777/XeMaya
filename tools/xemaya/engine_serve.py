@@ -79,8 +79,12 @@ class Engine:
             self.p.stdin.write("QUIT\n")
             self.p.stdin.flush()
             self.p.wait(timeout=120)
-        except Exception:
-            self.p.kill()
+        except Exception:   # SIGTERM first; SIGKILL (which left GPU engine resets in window 3) only if that fails too
+            self.p.terminate()
+            try:
+                self.p.wait(timeout=60)
+            except Exception:
+                self.p.kill()
         self.log.close()
 
 
