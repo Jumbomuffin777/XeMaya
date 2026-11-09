@@ -598,6 +598,8 @@ private:
           *g_kv_ = nullptr, *g_lat_ = nullptr, *g_latT_ = nullptr, *g_voT_ = nullptr, *g_vo_ = nullptr;
     float *g_iq_ = nullptr, *g_ik_ = nullptr, *g_ig_ = nullptr, *g_iw_ = nullptr, *g_scores_ = nullptr;
     int32_t *g_ids_ = nullptr, *g_steps_ = nullptr;
+    float* g_mla_scratch_ = nullptr;      ///< XeMaya: glm5_mla_attn_tiled's split partials (decode windows)
+    int64_t g_mla_scratch_floats_ = 0;
     float *g_ffg_ = nullptr, *g_ffu_ = nullptr;
     /// The recurrent states' sizes in bytes (a GDN's or a KDA's; its convolution history), for reset and spec_step.
     size_t state_bytes_ = 0, conv_bytes_ = 0;

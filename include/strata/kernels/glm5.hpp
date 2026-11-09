@@ -123,6 +123,21 @@ void glm5_mla_attn(const float* q, const uint16_t* latent, const int32_t* ids, i
                    int n_heads, float scale, int64_t n_tokens, float* out, void* stream, int tail_kpool = 0,
                    int64_t compact = 0);
 
+/// XeMaya: glm5_mla_attn's result with each latent cell read once for a group of 8 heads instead of twice for every
+/// head: a work-group takes a token and 8 heads, loads the cells 32 at a time into local memory, and keeps an online
+/// softmax (no per-head score buffer).  With `scratch`, a token's cells are split over several work-groups (decode
+/// windows: 64 heads alone are 8 work-groups) and glm5_mla_attn_combine's pass merges them; without it (or with too
+/// little) the cells are not split.  Same arguments and result as glm5_mla_attn (sums in another order); n_heads a
+/// multiple of 8.  The original kernel stays the reference and the fallback (XEMAYA_MLA_ATTN=ref).
+int64_t glm5_mla_attn_tiled_splits(int64_t n_tokens, int n_heads);
+/// The scratch floats glm5_mla_attn_tiled's splits take for n_tokens (0: no split at that size).
+int64_t glm5_mla_attn_tiled_scratch(int64_t n_tokens, int n_heads);
+void glm5_mla_attn_tiled(const float* q, const uint16_t* latent, const int32_t* ids, int64_t cap, const int32_t* steps,
+                         int n_heads, float scale, int64_t n_tokens, float* out, float* scratch, int64_t scratch_floats,
+                         void* stream, int tail_kpool = 0, int64_t compact = 0);
+/// Whether PlainModel uses glm5_mla_attn_tiled: XEMAYA_MLA_ATTN=tiled (default ref until the Arc cards confirm it).
+bool glm5_mla_attn_tiled_on();
+
 /// The cells glm5_mla_attn reads for each token (its selection, then its unfinished pool's cells up to it) copied
 /// from `latent` [cells][L] into out [T][stride][L], in that order: one read of each over PCIe when the latent lives
 /// in host memory (--kv-ram), where the attention would read each cell twice for each head.  stride >= cap +

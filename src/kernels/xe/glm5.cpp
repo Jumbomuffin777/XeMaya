@@ -13,7 +13,10 @@
 #define STRATA_DEVICE_ARCH_TAG_TU xe_glm5
 #include "strata/kernels/device_arch_tag.hpp"
 
+#include <algorithm>
 #include <cmath>
+#include <cstdlib>
+#include <cstring>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -538,6 +541,138 @@ void glm5_mla_attn(const float* q, const uint16_t* latent, const int32_t* ids, i
         });
     });
     sync_if_needed(stream, event, "glm5_mla_attn");
+}
+
+namespace {
+constexpr int kMlaHeads = 8;              // heads a work-group: a sub-group each
+constexpr int kMlaTile = WARP;            // cells a tile: a lane's score each
+constexpr int kMlaTargetGroups = 256;     // the work-groups a small window's splits aim for
+constexpr int64_t kMlaMaxSplits = 64;
+}  // namespace
+
+int64_t glm5_mla_attn_tiled_splits(int64_t n_tokens, int n_heads) {
+    if (n_tokens <= 0 || n_heads <= 0) return 1;
+    const int64_t groups = n_tokens * ((n_heads + kMlaHeads - 1) / kMlaHeads);
+    return std::clamp<int64_t>((kMlaTargetGroups + groups - 1) / groups, 1, kMlaMaxSplits);
+}
+
+int64_t glm5_mla_attn_tiled_scratch(int64_t n_tokens, int n_heads) {
+    const int64_t s = glm5_mla_attn_tiled_splits(n_tokens, n_heads);
+    return s > 1 ? n_tokens * n_heads * s * (512 + 2) : 0;
+}
+
+bool glm5_mla_attn_tiled_on() {
+    static const bool on = [] {
+        const char* v = std::getenv("XEMAYA_MLA_ATTN");
+        return v != nullptr && std::strcmp(v, "tiled") == 0;
+    }();
+    return on;
+}
+
+void glm5_mla_attn_tiled(const float* q, const uint16_t* latent, const int32_t* ids, int64_t cap, const int32_t* steps,
+                         int n_heads, float scale, int64_t n_tokens, float* out, float* scratch, int64_t scratch_floats,
+                         void* stream, int tail_kpool, int64_t compact) {
+    constexpr int L = 512, HG = kMlaHeads, BC = kMlaTile, WG = HG * WARP, PER = L / WARP, L8 = L / 8;
+    if (n_tokens <= 0) return;
+    if (n_heads <= 0 || n_heads % HG != 0 || cap <= 0 || n_tokens * n_heads > 0x7fffffff || tail_kpool < 0 ||
+        tail_kpool == 1)
+        throw core::DeviceError("glm5_mla_attn_tiled: " + std::to_string(n_heads) + " heads, cap " +
+                                std::to_string(cap) + ", tail pool " + std::to_string(tail_kpool));
+    const int H = n_heads, KP = tail_kpool, G = n_heads / HG;
+    int64_t S = glm5_mla_attn_tiled_splits(n_tokens, n_heads);
+    if (S > 1 && (scratch == nullptr || scratch_floats < n_tokens * H * S * (L + 2))) S = 1;
+    float* const part = S > 1 ? scratch : nullptr;
+    auto& qu = queue_for(stream);
+    const auto event = qu.submit([&](sycl::handler& hd) {
+        sycl::local_accessor<sycl::uint4, 1> tile(sycl::range<1>((size_t) BC * L8), hd);
+        hd.parallel_for(sycl::nd_range<1>((size_t) (n_tokens * G * S) * WG, WG),
+                        [=](sycl::nd_item<1> it) [[sycl::reqd_sub_group_size(WARP)]] {
+            const int64_t wg = (int64_t) it.get_group(0);
+            const int64_t s = wg % S, tg = wg / S, g = tg % G, t = tg / G;
+            const int lid = (int) it.get_local_id(0);
+            const sycl::sub_group sg = it.get_sub_group();
+            const int warp = (int) sg.get_group_linear_id(), lane = (int) sg.get_local_linear_id();
+            const int64_t th = t * H + g * HG + warp;   // this sub-group's head
+            const int64_t chosen = sycl::min<int64_t>(steps[t * kStepCount + kStepWidth], cap);
+            const int32_t pos = steps[t * kStepCount + kStepPos];
+            const int64_t tail0 = KP > 0 && pos >= 0 ? (int64_t) ((pos + 1) / KP) * KP : 0;
+            const int64_t width = chosen + (KP > 0 && pos >= 0 ? (int64_t) pos + 1 - tail0 : 0);
+            const int32_t* sel = ids + t * cap;
+            auto cell = [&](int64_t j) {
+                return compact > 0 ? t * compact + j : j < chosen ? (int64_t) sel[j] : tail0 + (j - chosen);
+            };
+            const int64_t per = width > 0 ? (width + S - 1) / S : 0;
+            const int64_t j0 = s * per, j1 = sycl::min<int64_t>(width, j0 + per);
+            // q's lane slice: dims lane + WARP i (a sub-group reads 32 consecutive halves of a row at once)
+            float qr[PER], o[PER];
+            for (int i = 0; i < PER; ++i) {
+                qr[i] = q[th * L + lane + WARP * i] * scale;
+                o[i] = 0.0f;
+            }
+            float m = -INFINITY, l = 0.0f;
+            const sycl::uint4* lat4 = reinterpret_cast<const sycl::uint4*>(latent);
+            const uint16_t* t16 = reinterpret_cast<const uint16_t*>(
+                tile.template get_multi_ptr<sycl::access::decorated::no>().get());
+            for (int64_t c0 = j0; c0 < j1; c0 += BC) {   // uniform over the work-group
+                const int n = (int) sycl::min<int64_t>(BC, j1 - c0);
+                sycl::group_barrier(it.get_group());     // the last tile is read
+                for (int v = lid; v < n * L8; v += WG) tile[v] = lat4[cell(c0 + v / L8) * L8 + v % L8];
+                sycl::group_barrier(it.get_group());
+                float mine = -INFINITY;                  // lane c's cell's score
+                for (int c = 0; c < n; ++c) {
+                    const uint16_t* row = t16 + c * L;
+                    float d = 0.0f;
+                    for (int i = 0; i < PER; ++i) d += qr[i] * f32_from_f16(row[lane + WARP * i]);
+                    d = sycl::reduce_over_group(sg, d, sycl::plus<float>());
+                    if (lane == c) mine = d;
+                }
+                const float mt = sycl::reduce_over_group(sg, mine, sycl::maximum<float>());
+                const float mn = sycl::fmax(m, mt);
+                const float corr = m == -INFINITY ? 0.0f : sycl::exp(m - mn);
+                const float p = lane < n ? sycl::exp(mine - mn) : 0.0f;
+                l = l * corr + sycl::reduce_over_group(sg, p, sycl::plus<float>());
+                for (int i = 0; i < PER; ++i) o[i] *= corr;
+                for (int c = 0; c < n; ++c) {
+                    const float pc = sycl::select_from_group(sg, p, c);
+                    const uint16_t* row = t16 + c * L;
+                    for (int i = 0; i < PER; ++i) o[i] += pc * f32_from_f16(row[lane + WARP * i]);
+                }
+                m = mn;
+            }
+            if (part == nullptr) {
+                const float inv = l > 0.0f ? 1.0f / l : 0.0f;
+                for (int i = 0; i < PER; ++i) out[th * L + lane + WARP * i] = o[i] * inv;
+            } else {
+                float* pp = part + (th * S + s) * (L + 2);
+                for (int i = 0; i < PER; ++i) pp[lane + WARP * i] = o[i];
+                if (lane == 0) {
+                    pp[L] = m;
+                    pp[L + 1] = l;
+                }
+            }
+        });
+    });
+    sync_if_needed(stream, event, "glm5_mla_attn_tiled");
+    if (part == nullptr) return;
+    // the splits' partial sums, each at its own maximum, merged
+    const auto merged = qu.parallel_for(sycl::range<2>((size_t) (n_tokens * H), (size_t) L), [=](sycl::id<2> id) {
+        const int64_t th = (int64_t) id[0];
+        const int d = (int) id[1];
+        const float* pp = part + th * S * (L + 2);
+        float mx = -INFINITY;
+        for (int64_t s = 0; s < S; ++s)
+            if (pp[s * (L + 2) + L + 1] > 0.0f) mx = sycl::fmax(mx, pp[s * (L + 2) + L]);
+        float num = 0.0f, den = 0.0f;
+        for (int64_t s = 0; s < S; ++s) {
+            const float ls = pp[s * (L + 2) + L + 1];
+            if (!(ls > 0.0f)) continue;
+            const float w = sycl::exp(pp[s * (L + 2) + L] - mx);
+            num += w * pp[s * (L + 2) + d];
+            den += w * ls;
+        }
+        out[th * L + d] = den > 0.0f ? num / den : 0.0f;
+    });
+    sync_if_needed(stream, merged, "glm5_mla_attn_tiled (merge)");
 }
 
 void glm5_latent_gather(const uint16_t* latent, const int32_t* ids, int64_t cap, const int32_t* steps,

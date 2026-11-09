@@ -20,6 +20,7 @@
 #include "ggml-common.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <numeric>
@@ -592,6 +593,156 @@ int test_hc_f32() {
     return bad;
 }
 
+// ---- XeMaya: glm5_mla_attn_tiled (heads sharing the latent's tiles, online softmax, split cells) against a
+// double-precision reference of glm5_mla_attn's semantics: selection, unfinished-pool tail, compact rows, empty tokens
+namespace mla {
+constexpr int L = 512;
+struct Case {
+    const char* what;
+    int64_t T, cells, cap;
+    int H, kpool;
+    bool compact, scratch;
+};
+// a token's cell list exactly as the kernels read it
+std::vector<int64_t> cells_of(const std::vector<int32_t>& steps, const std::vector<int32_t>& ids, int64_t t, int64_t cap,
+                              int kp, int64_t compact) {
+    using namespace strata::kernels;
+    const int64_t chosen = std::min<int64_t>(steps[(size_t) t * kStepCount + kStepWidth], cap);
+    const int32_t pos = steps[(size_t) t * kStepCount + kStepPos];
+    const int64_t tail0 = kp > 0 && pos >= 0 ? (int64_t) ((pos + 1) / kp) * kp : 0;
+    const int64_t width = chosen + (kp > 0 && pos >= 0 ? (int64_t) pos + 1 - tail0 : 0);
+    std::vector<int64_t> c;
+    for (int64_t j = 0; j < width; ++j)
+        c.push_back(compact > 0 ? t * compact + j : j < chosen ? (int64_t) ids[(size_t) (t * cap + j)] : tail0 + (j - chosen));
+    return c;
+}
+int run(const Case& k) {
+    using namespace strata::kernels;
+    const int64_t T = k.T, cap = k.cap, stride = k.compact ? cap + (k.kpool > 1 ? k.kpool - 1 : 0) : 0;
+    std::vector<int32_t> steps((size_t) T * kStepCount, 0), ids((size_t) (T * cap), 0);
+    std::mt19937 r(91 + (unsigned) T);
+    for (int64_t t = 0; t < T; ++t) {
+        const int32_t pos = (int32_t) (k.cells - T + t);
+        steps[(size_t) t * kStepCount + kStepPos] = pos;
+        const int64_t done = k.kpool > 0 ? (int64_t) ((pos + 1) / k.kpool) * k.kpool : pos + 1;   // completed pools' cells
+        int64_t chosen = t == 0 && T > 2 ? 0 : std::min<int64_t>(cap, done);                      // one empty token
+        std::vector<int32_t> pick((size_t) done);
+        std::iota(pick.begin(), pick.end(), 0);
+        std::shuffle(pick.begin(), pick.end(), r);
+        chosen = std::min<int64_t>(chosen, (int64_t) pick.size());
+        for (int64_t j = 0; j < chosen; ++j) ids[(size_t) (t * cap + j)] = pick[(size_t) j];
+        steps[(size_t) t * kStepCount + kStepWidth] = (int32_t) chosen;
+    }
+    const int64_t rows = k.compact ? T * stride : k.cells;
+    std::vector<float> latf = randn((size_t) (rows * L), 0.5f), qv = randn((size_t) (T * k.H * L), 0.08f);
+    std::vector<uint16_t> lat(latf.size());
+    for (size_t i = 0; i < lat.size(); ++i) {
+        lat[i] = strata::kernels::f16_from_f32(latf[i]);
+        latf[i] = strata::kernels::f32_from_f16(lat[i]);
+    }
+    const float scale = 1.0f / std::sqrt(256.0f);
+    std::vector<double> ref((size_t) (T * k.H * L), 0.0);
+    for (int64_t t = 0; t < T; ++t) {
+        const auto cs = cells_of(steps, ids, t, cap, k.kpool, stride);
+        for (int h = 0; h < k.H; ++h) {
+            if (cs.empty()) continue;
+            const float* qh = qv.data() + (size_t) ((t * k.H + h) * L);
+            std::vector<double> sc(cs.size());
+            double mx = -1e300;
+            for (size_t j = 0; j < cs.size(); ++j) {
+                double d = 0;
+                for (int i = 0; i < L; ++i) d += (double) qh[i] * latf[(size_t) (cs[j] * L + i)];
+                sc[j] = d * scale;
+                mx = std::max(mx, sc[j]);
+            }
+            double sum = 0;
+            for (auto& v : sc) sum += (v = std::exp(v - mx));
+            for (size_t j = 0; j < cs.size(); ++j)
+                for (int i = 0; i < L; ++i)
+                    ref[(size_t) ((t * k.H + h) * L + i)] += sc[j] / sum * latf[(size_t) (cs[j] * L + i)];
+        }
+    }
+    strata::parity::Device dev;
+    int32_t *ds = dev.upload(steps), *di = dev.upload(ids);
+    uint16_t* dl = dev.upload(lat);
+    float *dq = dev.upload(qv), *dout = dev.alloc<float>(qv.size());
+    const int64_t sf = k.scratch ? glm5_mla_attn_tiled_scratch(T, k.H) : 0;
+    float* dsc = sf > 0 ? dev.alloc<float>((size_t) sf) : nullptr;
+    glm5_mla_attn_tiled(dq, dl, di, cap, ds, k.H, scale, T, dout, dsc, sf, nullptr, k.kpool, stride);
+    std::vector<float> got(qv.size());
+    strata::parity::copy_out(got.data(), dout, got.size());
+    const std::string tag = std::string("mla_attn_tiled, ") + k.what + " (" + std::to_string(glm5_mla_attn_tiled_splits(T, k.H)) +
+                            (sf > 0 ? " splits)" : " splits wanted, scratch none)");
+    int bad = compare(tag.c_str(), got, ref, 2e-4);
+    glm5_mla_attn(dq, dl, di, cap, ds, k.H, scale, T, dout, nullptr, k.kpool, stride);   // the original, same reference
+    strata::parity::copy_out(got.data(), dout, got.size());
+    bad += compare((std::string("mla_attn (original), ") + k.what).c_str(), got, ref, 2e-4);
+    return bad;
+}
+}  // namespace mla
+
+int test_mla_tiled() {
+    int bad = 0;
+    for (const mla::Case& k : {mla::Case{"prompt chunk T=37, tail pools", 37, 300, 96, 64, 4, false, false},
+                               mla::Case{"decode T=1, 1,500 cells, split", 1, 1501, 1500, 64, 0, false, true},
+                               mla::Case{"decode T=1, no scratch", 1, 1501, 1500, 64, 0, false, false},
+                               mla::Case{"window T=3, compact rows, split", 3, 400, 128, 64, 4, true, true},
+                               mla::Case{"window T=8, 16 heads, split", 8, 700, 512, 16, 4, false, true}})
+        bad += mla::run(k);
+    return bad;
+}
+
+// --bench-mla [P]: glm5_mla_attn and glm5_mla_attn_tiled at GLM-5.3-Flash's shape (64 heads, L 512): a P-token prompt
+// chunk over all its earlier cells (P <= 8192: every cell is selected), and decode windows of 1 and 4 tokens over the
+// cache's P cells (split cells)
+int bench_mla(int64_t P) {
+    using namespace strata::kernels;
+    constexpr int H = 64, L = mla::L;
+    const int64_t cap = std::max<int64_t>(P, 1);
+    std::vector<uint16_t> lat((size_t) (P * L));
+    {
+        std::vector<float> f = randn(lat.size(), 0.5f);
+        for (size_t i = 0; i < f.size(); ++i) lat[i] = f16_from_f32(f[i]);
+    }
+    strata::parity::Device dev;
+    uint16_t* dl = dev.upload(lat);
+    auto time_ms = [&](auto&& fn) {
+        fn();
+        strata::parity::sync();
+        double best = 1e30;
+        for (int r = 0; r < 3; ++r) {
+            const auto a = std::chrono::steady_clock::now();
+            fn();
+            strata::parity::sync();
+            best = std::min(best, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - a).count());
+        }
+        return best;
+    };
+    std::printf("bench mla_attn: 64 heads, L 512, %lld cells\n", (long long) P);
+    for (const int64_t T : {P, (int64_t) 1, (int64_t) 4}) {
+        const bool prompt = T == P;
+        std::vector<int32_t> steps((size_t) T * kStepCount, 0), ids((size_t) (T * cap));
+        for (int64_t t = 0; t < T; ++t) {
+            const int32_t pos = prompt ? (int32_t) t : (int32_t) (P - T + t);
+            steps[(size_t) t * kStepCount + kStepPos] = pos;
+            steps[(size_t) t * kStepCount + kStepWidth] = (int32_t) std::min<int64_t>(cap, pos + 1);
+            for (int64_t j = 0; j < cap; ++j) ids[(size_t) (t * cap + j)] = (int32_t) std::min<int64_t>(j, P - 1);
+        }
+        std::vector<float> qv = randn((size_t) (T * H * L), 0.08f);
+        int32_t *ds = dev.upload(steps), *di = dev.upload(ids);
+        float *dq = dev.upload(qv), *dout = dev.alloc<float>(qv.size());
+        const int64_t sf = glm5_mla_attn_tiled_scratch(T, H);
+        float* dsc = sf > 0 ? dev.alloc<float>((size_t) sf) : nullptr;
+        void* st = strata::parity::stream();
+        const double a = time_ms([&] { glm5_mla_attn(dq, dl, di, cap, ds, H, 0.0625f, T, dout, st); });
+        const double b = time_ms([&] { glm5_mla_attn_tiled(dq, dl, di, cap, ds, H, 0.0625f, T, dout, dsc, sf, st); });
+        std::printf("  %-28s original %9.3f ms   tiled %9.3f ms   %.2fx\n",
+                    (prompt ? "prompt chunk of " + std::to_string(T) + " tokens" : "decode window of " + std::to_string(T)).c_str(),
+                    a, b, a / b);
+    }
+    return 0;
+}
+
 // ---- the clamped SwiGLU
 int test_swiglu_clamp() {
     const size_t n = 4096;
@@ -615,13 +766,15 @@ int test_swiglu_clamp() {
 }  // namespace
 
 int main(int argc, char** argv) {
+    if (argc >= 2 && std::string(argv[1]) == "--bench-mla")
+        return bench_mla(argc >= 3 ? std::strtoll(argv[2], nullptr, 10) : 2377);
     for (int i = 1; i < argc; ++i)
         if (std::string(argv[i]) != "--selftest") {
-            std::fprintf(stderr, "usage: glm5_parity [--selftest]\n");
+            std::fprintf(stderr, "usage: glm5_parity [--selftest | --bench-mla [cells]]\n");
             return 2;
         }
     std::printf("glm5_parity: GLM-5.3-Flash's kernels against host references\n");
-    const int bad = test_hc() + test_hc_f32() + test_router() + test_kda() + test_dsa() + test_iq1_s() + test_swiglu_clamp();
+    const int bad = test_hc() + test_hc_f32() + test_mla_tiled() + test_router() + test_kda() + test_dsa() + test_iq1_s() + test_swiglu_clamp();
     std::printf("%s\n", bad ? "FAIL" : "PASS");
     return bad ? 1 : 0;
 }

@@ -361,6 +361,10 @@ bool PlainModel::load_glm5(std::string& err) {
         return true;
     };
     const uint64_t UC = T * (uint64_t) C, L4 = T * NH * (uint64_t) KVR;
+    // XeMaya: glm5_mla_attn_tiled's split partials, the most any window of 1..T tokens takes
+    g_mla_scratch_floats_ = 0;
+    for (int64_t n = 1; n <= (int64_t) T; ++n)
+        g_mla_scratch_floats_ = std::max(g_mla_scratch_floats_, k::glm5_mla_attn_tiled_scratch(n, (int) NH));
     if (!dev(&step_, T * k::kStepCount * 4) || !dev(&g_steps_, T * k::kStepCount * 4) || !dev(&x_, T * N * 4) ||
         !dev(&hn_, T * N * 4) || !dev(&mix_, T * N * 4) || !dev(&g_xq_, xq) || !dev(&g_hs_, T * kHC * N * 4) ||
         !dev(&g_mixes_, T * kMix * 4) || !dev(&g_post_, T * kHC * 4) || !dev(&g_comb_, T * kHC * kHC * 4) ||
@@ -378,6 +382,7 @@ bool PlainModel::load_glm5(std::string& err) {
         !dev(&g_iq_, T * IH * (uint64_t) ID * 4) || !dev(&g_ik_, T * (uint64_t) ID * 4) ||
         !dev(&g_ig_, T * (uint64_t) ID * 4) || !dev(&g_iw_, T * IH * 4) ||
         !dev(&g_scores_, T * (uint64_t) g_max_blocks_ * 4) || !dev(&g_ids_, T * (uint64_t) g_cap_ * 4) ||
+        !dev(&g_mla_scratch_, (uint64_t) std::max<int64_t>(1, g_mla_scratch_floats_) * 4) ||
         // the FFN
         !dev(&g_ffg_, T * FW * 4) || !dev(&g_ffu_, T * FW * 4) || !dev(&rlog_, T * E * 4) || !dev(&ids_, T * K * 4) ||
         !dev(&w_, T * K * 4) || !dev(&shared_, T * N * 4) || !dev(&moe_out_, T * N * 4) ||
@@ -545,8 +550,16 @@ void PlainModel::record_dsa(const GBlock& b, int T, strata::gpu::Stream cs) {
         if (g_lat_gather_ != nullptr) {   // --kv-ram: each token's cells from RAM once, the attention over them
             k::glm5_latent_gather(g_latent_[(size_t) d], g_ids_, g_cap_, g_steps_, T, tail, g_gather_stride_, g_lat_gather_,
                                   cs);
-            k::glm5_mla_attn(g_abs_, g_lat_gather_, g_ids_, g_cap_, g_steps_, (int) H, 1.0f / std::sqrt((float) QK), T,
-                             g_lat_, cs, tail, g_gather_stride_);
+            if (k::glm5_mla_attn_tiled_on())   // XeMaya: heads share the cells' tiles; split cells, merged
+                k::glm5_mla_attn_tiled(g_abs_, g_lat_gather_, g_ids_, g_cap_, g_steps_, (int) H,
+                                       1.0f / std::sqrt((float) QK), T, g_lat_, g_mla_scratch_, g_mla_scratch_floats_, cs,
+                                       tail, g_gather_stride_);
+            else
+                k::glm5_mla_attn(g_abs_, g_lat_gather_, g_ids_, g_cap_, g_steps_, (int) H, 1.0f / std::sqrt((float) QK),
+                                 T, g_lat_, cs, tail, g_gather_stride_);
+        } else if (k::glm5_mla_attn_tiled_on()) {
+            k::glm5_mla_attn_tiled(g_abs_, g_latent_[(size_t) d], g_ids_, g_cap_, g_steps_, (int) H,
+                                   1.0f / std::sqrt((float) QK), T, g_lat_, g_mla_scratch_, g_mla_scratch_floats_, cs, tail);
         } else {
             k::glm5_mla_attn(g_abs_, g_latent_[(size_t) d], g_ids_, g_cap_, g_steps_, (int) H,
                              1.0f / std::sqrt((float) QK), T, g_lat_, cs, tail);

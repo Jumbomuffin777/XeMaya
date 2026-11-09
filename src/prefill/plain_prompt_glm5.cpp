@@ -108,7 +108,9 @@ bool PlainModel::prompt_chunks_glm5(const int32_t* tokens, int64_t n, int64_t po
     static const bool profile = std::getenv("STRATA_PROMPT_PROFILE") != nullptr;
     // 0 KDA (its parts 5 projections, 6 convolutions and gates, 7 recurrence, 8 output), 1 DSA, 2 the grouping, 3 the
     // experts, 4 the shared expert, mHC and dense FFN
-    double stage_ms[12] = {};   // 9 the chunk's staging, 10 the head, 11 what is left at the end
+    double stage_ms[16] = {};   // 9 the chunk's staging, 10 the head, 11 what is left at the end
+    // XeMaya: DSA's parts, 12 the projections, 13 the indexer and the selection, 14 q through wk_b, 15 the attention
+    // (1: wv_b and the output projection)
     auto t_mark = std::chrono::steady_clock::now();
     auto mark = [&](int stage) {
         if (!profile) return;
@@ -211,6 +213,7 @@ bool PlainModel::prompt_chunks_glm5(const int32_t* tokens, int64_t n, int64_t po
                     k::native_qsa_rms_norm_weighted(P.g_qa, b.q_a_norm, P.g_qr, (int) QLR, (int) T, eps, cs);
                     dense(b.q_b, P.g_qr, P.g_qb, T);
                     dense(b.idx_q_b, P.g_qr, P.g_iq, T);
+                    mark(12);
                     k::glm5_idx_append(P.g_ik, P.g_ig, b.idx_k_norm, b.idx_k_norm_b,
                                        s.norm_eps > 0 ? (float) s.norm_eps : 1e-6f, P.g_steps, T,
                                        g_idx_cache_[(size_t) d], cs);
@@ -220,6 +223,7 @@ bool PlainModel::prompt_chunks_glm5(const int32_t* tokens, int64_t n, int64_t po
                                        P.g_scores, cs);
                     k::qsa_block_topk(P.g_scores, P.g_steps, T, g_max_blocks_, g_cap_, sel, P.g_ids, cs);
                     k::glm5_latent_store(P.g_kv, P.g_steps, T, KVR, g_latent_[(size_t) d], cs);
+                    mark(13);
                     // each head's q through its wk_b into the latent, the attention, each head's wv_b
                     const size_t kb = k::native_mmvq_weight_bytes(file_type(b.k_b.type), (int) QK, (int) KVR);
                     const size_t vb = k::native_mmvq_weight_bytes(file_type(b.v_b.type), (int) KVR, (int) VD);
@@ -228,6 +232,7 @@ bool PlainModel::prompt_chunks_glm5(const int32_t* tokens, int64_t n, int64_t po
                         prod(b.k_b.type, (const uint8_t*) b.k_b.data + h * kb, QK, KVR, P.g_qbT + h * T * QK, QK,
                              P.g_absT + h * T * KVR, T, KVR);
                     k::glm5_transpose_abd(P.g_absT, P.g_abs, H, T, KVR, cs);
+                    mark(14);
                     // --kv-ram: the layer's cells up to the chunk's last into VRAM, read there
                     const uint16_t* lat = g_latent_[(size_t) d];
                     if (g_lat_stage_ != nullptr) {
@@ -237,9 +242,15 @@ bool PlainModel::prompt_chunks_glm5(const int32_t* tokens, int64_t n, int64_t po
                         }
                         lat = g_lat_stage_;
                     }
-                    k::glm5_mla_attn(P.g_abs, lat, P.g_ids, g_cap_, P.g_steps, (int) H,
-                                     1.0f / std::sqrt((float) QK), T, P.g_lat, cs,
-                                     s.idx_kpool_select_tail ? (int) s.idx_kpool : 0);
+                    if (k::glm5_mla_attn_tiled_on())   // XeMaya: a chunk's tokens are work enough, no split
+                        k::glm5_mla_attn_tiled(P.g_abs, lat, P.g_ids, g_cap_, P.g_steps, (int) H,
+                                               1.0f / std::sqrt((float) QK), T, P.g_lat, nullptr, 0, cs,
+                                               s.idx_kpool_select_tail ? (int) s.idx_kpool : 0);
+                    else
+                        k::glm5_mla_attn(P.g_abs, lat, P.g_ids, g_cap_, P.g_steps, (int) H,
+                                         1.0f / std::sqrt((float) QK), T, P.g_lat, cs,
+                                         s.idx_kpool_select_tail ? (int) s.idx_kpool : 0);
+                    mark(15);
                     k::glm5_transpose_abd(P.g_lat, P.g_latT, T, H, KVR, cs);
                     for (int64_t h = 0; h < H; ++h)
                         prod(b.v_b.type, (const uint8_t*) b.v_b.data + h * vb, KVR, VD, P.g_latT + h * T * KVR, KVR,
@@ -354,11 +365,14 @@ bool PlainModel::prompt_chunks_glm5(const int32_t* tokens, int64_t n, int64_t po
     windows_ += (n + opt_.max_t - 1) / opt_.max_t;
     if (profile)
         std::fprintf(stderr, "strata plain: GLM prompt of %lld tokens: KDA %.1f ms (projections %.1f, convolutions and "
-                             "gates %.1f, recurrence %.1f, output %.1f), DSA %.1f, grouping %.1f, experts %.1f, shared and "
+                             "gates %.1f, recurrence %.1f, output %.1f), DSA %.1f (projections %.1f, indexer %.1f, wk_b %.1f, attention %.1f%s, "
+                             "wv_b and output %.1f), grouping %.1f, experts %.1f, shared and "
                              "dense FFN %.1f, staging %.1f, head %.1f, the rest %.1f; experts not in VRAM %lld, on the CPU %lld "
                              "(%lld rows)\n",
                      (long long) n, stage_ms[5] + stage_ms[6] + stage_ms[7] + stage_ms[8], stage_ms[5], stage_ms[6],
-                     stage_ms[7], stage_ms[8], stage_ms[1], stage_ms[2], stage_ms[3], stage_ms[4], stage_ms[9], stage_ms[10], stage_ms[11],
+                     stage_ms[7], stage_ms[8], stage_ms[1] + stage_ms[12] + stage_ms[13] + stage_ms[14] + stage_ms[15],
+                     stage_ms[12], stage_ms[13], stage_ms[14], stage_ms[15], k::glm5_mla_attn_tiled_on() ? " tiled" : "",
+                     stage_ms[1], stage_ms[2], stage_ms[3], stage_ms[4], stage_ms[9], stage_ms[10], stage_ms[11],
                      (long long) rst.miss_n, (long long) rst.cpu_n, (long long) rst.cpu_rows);
     mtp_h_set_ = has_mtp_ && pos + n < opt_.max_cells;   // the trunk's last row is in mtp_h_ for spec_start
     if (!last()) return true;
