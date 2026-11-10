@@ -36,7 +36,7 @@
 
 namespace strata {
 
-enum class ModelArch { Qwen4Exp, Qwen35Moe, Qwen3Moe, Glm5Next, Qwen35, DeepSeek41 };
+enum class ModelArch { Qwen4Exp, Qwen35Moe, Qwen3Moe, Glm5Next, Qwen35, DeepSeek41, MiniMaxM3 };
 
 /// llama.cpp's `llama_expert_gating_func_type`
 enum class ExpertGating : uint32_t { None = 0, Softmax = 1, Sigmoid = 2, SoftmaxWeight = 3, SqrtSoftplus = 4 };
@@ -91,6 +91,10 @@ struct ModelSpec {
     int64_t q_lora_rank = 0, kv_lora_rank = 0, key_length_mla = 0, value_length_mla = 0;
     int64_t idx_n_head = 0, idx_key_length = 0, idx_top_k = 0, idx_kpool = 0;
     bool idx_kpool_select_tail = false;
+    // MiniMax-M3 (minimax-m3): MiniMax Sparse Attention - the indexer scores the positions, a block of
+    // idx_block_size positions takes its best position's score, and each K/V head attends the idx_top_k best blocks
+    // (the idx_local_blocks blocks ending at the query's own always among them)
+    int64_t idx_block_size = 0, idx_local_blocks = 0;
 
     // DeepSeek-V4.1-Flash (deepseek41)
     int64_t sliding_window = 0;
@@ -314,8 +318,10 @@ inline bool read_model_spec(const GgufFile& g, ModelSpec& s, std::string& err) {
     else if (A == "qwen3moe") s.arch = ModelArch::Qwen3Moe;
     else if (A == "glm5-next" || A == "glm5next") s.arch = ModelArch::Glm5Next;
     else if (A == "deepseek41") s.arch = ModelArch::DeepSeek41;
+    else if (A == "minimax-m3") s.arch = ModelArch::MiniMaxM3;
     else {
-        err = "architecture '" + A + "' is not supported (qwen4exp, qwen35moe, qwen35, qwen3moe, glm5-next, deepseek41)";
+        err = "architecture '" + A + "' is not supported (qwen4exp, qwen35moe, qwen35, qwen3moe, glm5-next, deepseek41, "
+              "minimax-m3)";
         return false;
     }
 
@@ -398,6 +404,7 @@ inline bool read_model_spec(const GgufFile& g, ModelSpec& s, std::string& err) {
         break;
     case ModelArch::Qwen3Moe:
     case ModelArch::DeepSeek41:
+    case ModelArch::MiniMaxM3:
         break;
     }
 
@@ -458,6 +465,34 @@ inline bool read_model_spec(const GgufFile& g, ModelSpec& s, std::string& err) {
     s.idx_kpool_select_tail = spec_int(g, A, "attention.indexer.kpool_select_tail", 1) != 0;
 
     if (s.arch == ModelArch::DeepSeek41 && !read_deepseek41(g, s, err)) return false;
+
+    if (s.arch == ModelArch::MiniMaxM3) {
+        // minimax-m3.cpp (llama.cpp master 8642541b2, load_arch_hparams and its graph's asserts): sigmoid routing with
+        // a shared expert, the leading dense blocks, one indexer head a K/V head, blocks of block_size positions
+        const char* need[] = {"expert_feed_forward_length", "expert_shared_count", "expert_gating_func",
+                              "attention.indexer.head_count", "attention.indexer.key_length", "attention.indexer.top_k",
+                              "attention.indexer.block_size", "attention.indexer.local_blocks"};
+        for (const char* k : need)
+            if (!spec_get(g, A, k)) { err = "missing " + A + "." + k; return false; }
+        s.idx_block_size = spec_int(g, A, "attention.indexer.block_size");
+        s.idx_local_blocks = spec_int(g, A, "attention.indexer.local_blocks");
+        if (s.n_ff_shexp == 0) s.n_ff_shexp = s.n_ff_exp * s.n_expert_shared;   // n_ff_exp a shared expert
+        const int64_t kvh = s.n_head_kv.empty() ? 0 : s.n_head_kv[0];
+        for (int64_t i = 0; i < s.n_layer; ++i)
+            if (s.n_head_kv[(size_t) i] != kvh) { err = A + ": attention.head_count_kv differs between layers"; return false; }
+        if (s.n_nextn != 0) { err = A + ": MiniMax-M3 has no MTP layer in the model"; return false; }
+        if (s.gating != ExpertGating::Sigmoid) {
+            err = A + ".expert_gating_func " + std::to_string((uint32_t) s.gating) + ": MiniMax-M3 needs 2 (sigmoid)";
+            return false;
+        }
+        if (s.idx_block_size <= 0 || s.idx_top_k <= 0 || s.idx_local_blocks < 0 || s.idx_key_length <= 0 || kvh <= 0 ||
+            s.n_head % kvh != 0 || s.idx_n_head != kvh || s.key_length != s.value_length || s.n_expert_shared <= 0 ||
+            s.rope_dims <= 0 || s.rope_dims > s.key_length || s.rope_dims > s.idx_key_length) {
+            err = A + ": the sparse attention's shape (one indexer head a K/V head, block_size and top_k above 0, "
+                      "rope.dimension_count within the key and the indexer key)";
+            return false;
+        }
+    }
 
     if (s.arch == ModelArch::Glm5Next) {
         // glm5-next.cpp asserts these: an mHC of 4 streams and a pool size that divides the indexer's budget
