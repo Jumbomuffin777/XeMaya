@@ -1060,6 +1060,28 @@ void rebase_ptrs(unsigned long long* ptr, const int32_t* n, uint8_t* base, int64
     done(stream, e, "rebase_ptrs");
 }
 
+void moe_direct_plan(const int32_t* ids, const unsigned long long* slots, int64_t n_entries, int k, int64_t n_expert,
+                     int32_t* counts, int32_t* start, int32_t* dst, int32_t* tok, unsigned long long* ptr, void* stream) {
+    if (n_entries <= 0 || k <= 0) return;
+    const int n = (int) n_entries, ne = (int) n_expert;
+    const auto e = Q(stream).parallel_for(sycl::range<1>((size_t) n + 1), [=](sycl::id<1> id) {
+        const int i = (int) id[0];
+        start[i] = i;
+        if (i == n) {
+            counts[0] = n;
+            counts[1] = n;
+            counts[2] = 0;
+            counts[3] = 0;
+            return;
+        }
+        const int x = ids[i];
+        dst[i] = i;
+        tok[i] = i / k;
+        ptr[i] = slots[x >= 0 && x < ne ? x : 0];
+    });
+    done(stream, e, "moe_direct_plan");
+}
+
 void add_streams_broadcast(const float* h, const float* ex, float* R, int64_t n_embd, int hc, int n_tok, void* stream) {
     const auto e = Q(stream).parallel_for(sycl::range<2>((size_t) n_tok, (size_t) (n_embd * hc)), [=](sycl::id<2> id) {
         const int t = (int) id[0];

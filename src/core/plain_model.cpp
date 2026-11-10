@@ -109,6 +109,7 @@ PlainModel::~PlainModel() {
         for (auto* g : v) strata::gpu::graph_destroy(g);
     for (void* p : allocs_) strata::gpu::free(p);
     for (void* p : {(void*) h_emb_, (void*) h_step_, (void*) h_pos_, (void*) h_out_, (void*) h_prob_, (void*) fill_tmp_,
+                    (void*) h_dids_,
                     (void*) hand_host_})
         strata::gpu::free(p);
     if (swap_ev_ != nullptr) strata::gpu::event_destroy(swap_ev_);
@@ -349,7 +350,12 @@ bool PlainModel::load(const PlainOptions& opt, std::string& err) {
         else
             for (int d = 1; d < Runtime::count(); ++d)
                 if (!device_info(d).integrated) split_devs_.push_back(d);
-        for (size_t i = 1; i < split_devs_.size(); ++i)
+        // XeMaya, for tests: XEMAYA_SPLIT_ONE_DEVICE=1 runs every stage of a given split on the first device, so the
+        // stages' hand-off is checked where there is one device (the OpenCL CPU device)
+        const char* one = std::getenv("XEMAYA_SPLIT_ONE_DEVICE");
+        const bool one_dev = one != nullptr && std::strcmp(one, "1") == 0 && !opt_.split_at.empty();
+        if (one_dev) split_devs_.assign(opt_.split_at.size() + 1, 0);
+        for (size_t i = 1; i < split_devs_.size() && !one_dev; ++i)
             if (split_devs_[i] <= 0 || split_devs_[i] >= Runtime::count() ||
                 std::count(split_devs_.begin(), split_devs_.end(), split_devs_[i]) > 1) {
                 err = "plain model: --split-device names GPU " + std::to_string(split_devs_[i]) +
@@ -1364,16 +1370,10 @@ bool PlainModel::open_experts(std::string& err) {
     }
     // the tier from a profile, after the split's timing (which needs experts in RAM outside the VRAM): its ranking,
     // each of this stage's layers up to its slots
-    if (!opt_.profile.empty()) {   // prior_ read above, where it sized the layers' slots
-        // each layer up to its slots, the experts read on several threads, each through pinned memory of its own: one
-        // at a time, GLM-5.3-Flash's 2,646 (22.9 GB) took 19.5 s from the drive, 1.2 GB/s (B70, 990 Pro, 2026-10-19)
-        struct Fill { int64_t l; int32_t e, slot; };
-        std::vector<Fill> todo;
-        for (const auto& [l, e] : prior_)
-            if (!free_[(size_t) l].empty()) {
-                todo.push_back({l, e, free_[(size_t) l].back()});
-                free_[(size_t) l].pop_back();
-            }
+    // experts into their slots, read on several threads, each through pinned memory of its own: one at a time,
+    // GLM-5.3-Flash's 2,646 (22.9 GB) took 19.5 s from the drive, 1.2 GB/s (B70, 990 Pro, 2026-10-19)
+    struct Fill { int64_t l; int32_t e, slot; };
+    auto fill_many = [&](const std::vector<Fill>& todo) {
         std::atomic<size_t> next{0};
         std::atomic<bool> bad{false};
         auto work = [&]() {
@@ -1400,9 +1400,66 @@ bool PlainModel::open_experts(std::string& err) {
             return false;
         }
         for (const Fill& f : todo) res_[(size_t) (f.l * E + f.e)] = f.slot;
-        const int64_t filled = (int64_t) todo.size();
+        return true;
+    };
+    if (!opt_.profile.empty()) {   // prior_ read above, where it sized the layers' slots: each layer up to its slots
+        std::vector<Fill> todo;
+        for (const auto& [l, e] : prior_)
+            if (!free_[(size_t) l].empty()) {
+                todo.push_back({l, e, free_[(size_t) l].back()});
+                free_[(size_t) l].pop_back();
+            }
+        if (!fill_many(todo)) return false;
         std::fprintf(stderr, "strata plain: the VRAM tier filled from %s: %lld experts\n", opt_.profile.c_str(),
-                     (long long) filled);
+                     (long long) todo.size());
+    }
+    // XeMaya: a stage whose tier has a slot for every expert of its layers, and whose prompt buffers stand beside the
+    // tier (no slot is lent to a prompt), holds every expert from the load on, wherever the experts are read from.
+    // Its decode windows then plan the experts on the GPU from the router's ids and a table of the slots
+    // (MoeWindow::direct): the host is not asked once a layer, and the window is one graph.  XEMAYA_DIRECT_EXPERTS=0:
+    // through the host as before
+    direct_ = false;
+    {
+        const char* v = std::getenv("XEMAYA_DIRECT_EXPERTS");
+        bool whole = (v == nullptr || std::strtol(v, nullptr, 10) != 0) && LS > 0 && lay.native && !opt_.vram_elastic &&
+                     (opt_.prompt_chunk == 0 || !prompt_dev_.at.empty());
+        for (int64_t l : moe_local_) whole = whole && quota[(size_t) l] == E;
+        if (whole) {
+            std::vector<Fill> todo;
+            for (int64_t l : moe_local_)
+                for (int32_t e = 0; e < (int32_t) E; ++e)
+                    if (res_[(size_t) (l * E + e)] < 0 && !free_[(size_t) l].empty()) {
+                        todo.push_back({l, e, free_[(size_t) l].back()});
+                        free_[(size_t) l].pop_back();
+                    }
+            const auto t0 = std::chrono::steady_clock::now();
+            if (!fill_many(todo)) return false;
+            std::vector<unsigned long long> tab((size_t) (LS * E), 0);
+            for (int64_t i = 0; i < LS && whole; ++i)
+                for (int64_t e = 0; e < E && whole; ++e) {
+                    const int32_t r = res_[(size_t) (moe_local_[(size_t) i] * E + e)];
+                    whole = r >= 0;
+                    if (whole) tab[(size_t) (i * E + e)] = (unsigned long long) (uintptr_t) cache_.device_slot(r);
+                }
+            void *d = nullptr, *hd = nullptr, *md = nullptr;
+            const size_t ids_b = (size_t) (LS * opt_.max_t * s.n_expert_used) * 4 + 64;
+            if (whole && strata::gpu::alloc_host(&hd, ids_b) && strata::gpu::device_pointer(&md, hd) &&
+                strata::gpu::alloc_device(&d, tab.size() * 8) && strata::gpu::copy(d, tab.data(), tab.size() * 8)) {
+                std::memset(hd, 0, ids_b);
+                h_dids_ = (int32_t*) hd;
+                m_dids_ = (int32_t*) md;
+                allocs_.push_back(d);
+                d_slot_tab_ = (const unsigned long long*) d;
+                direct_ = true;
+                std::fprintf(stderr, "strata plain: every expert of blocks %lld..%lld is in VRAM (%lld read in %.1f s): "
+                                     "the decode windows plan them on the GPU\n", (long long) lb_, (long long) le_ - 1,
+                             (long long) todo.size(),
+                             std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+            } else {
+                if (d != nullptr) strata::gpu::free(d);
+                if (hd != nullptr) strata::gpu::free(hd);
+            }
+        }
     }
     // without a profile each layer's tier takes its first experts (the adaptive tier moves them), so that the RAM copy
     // below leaves out what VRAM holds
@@ -1871,7 +1928,7 @@ std::vector<PlainModel::StatePart> PlainModel::state_parts(int64_t tokens) const
     if (ds_) {   // XeMaya: the rings and open blocks, a KV-source layer's compressed rows of the tokens, the tokens
         for (const StatePart& p : ds41_recurrent_parts()) parts.push_back(p);
         const int64_t D = s.key_length, ID = s.idx_key_length;
-        for (int64_t l = lb_; l < le_; ++l)
+        for (int64_t l = 0; l < le_; ++l)   // the stage's own caches and its copy of a carried one
             if (d_comp_[(size_t) l] != nullptr)
                 parts.push_back({d_comp_[(size_t) l], (size_t) (std::min(d_rows_[(size_t) l], tokens / dblocks_[(size_t) l].ratio) * (D + ID)) * 4});
         parts.push_back({m_dtok_, (size_t) tokens * 4});
@@ -2070,6 +2127,49 @@ bool PlainModel::reset(std::string& err) {
     return ok;
 }
 
+void PlainModel::moe_publish(uint32_t& ring, int T, strata::gpu::Stream cs) {
+    if (direct_) return;
+    ++ring;
+    win_.publish(ring, 0, 0, T, hn_, ids_, w_, cs);
+}
+
+bool PlainModel::moe_experts(int64_t ml, uint32_t ring, int T, std::vector<strata::gpu::Graph*>& segs,
+                             strata::gpu::Stream cs, std::string& err) {
+    if (direct_) {
+        const int64_t i = std::find(moe_local_.begin(), moe_local_.end(), ml) - moe_local_.begin();
+        const int64_t K = spec_.n_expert_used;
+        if (i >= (int64_t) moe_local_.size()) { err = "plain model: a MoE layer of another stage"; return false; }
+        k::copy_i32_from_mapped(m_dids_ + (size_t) (i * opt_.max_t * K), ids_, (int64_t) T * K, cs);
+        return win_.direct(ml, 0, T, hn_, ids_, d_slot_tab_ + (size_t) (i * spec_.n_expert), cs, err);
+    }
+    if (win_.segmented()) {   // a graph ends where the host must answer the ring
+        strata::gpu::Graph* g = nullptr;
+        if (!strata::gpu::end_capture(cs, &g)) {
+            err = std::string("plain model: segment capture: ") + strata::gpu::last_error();
+            return false;
+        }
+        segs.push_back(g);
+        if (!strata::gpu::begin_capture(cs)) { err = "plain model: begin capture failed"; return false; }
+    }
+    return win_.experts(ml, ring, 0, 0, T, cs, err);
+}
+
+void PlainModel::direct_account(const int64_t* layers, int64_t n_layers, int T) {
+    const int64_t E = spec_.n_expert, K = spec_.n_expert_used;
+    for (int64_t r = 0; r < n_layers; ++r) {
+        const int64_t layer = layers[r];
+        const int64_t i = std::find(moe_local_.begin(), moe_local_.end(), layer) - moe_local_.begin();
+        const int32_t* ids = h_dids_ + (size_t) (i * opt_.max_t * K);
+        for (int64_t j = 0; j < (int64_t) T * K; ++j)
+            if (ids[j] >= 0 && ids[j] < E) heat_[(size_t) (layer * E + ids[j])] += 1.0;
+        dump_routes(layer, ids, T, K);
+        disp_.cache_hits += (int64_t) T * K;
+        if (!disp_.usage.empty() && disp_.usage_by_window && !disp_.route_rec.empty() && layer < disp_.route_rec_layers &&
+            T <= disp_.route_rec_t)
+            std::copy(ids, ids + (int64_t) T * K, disp_.route_rec.data() + (size_t) layer * (size_t) (disp_.route_rec_t * K));
+    }
+}
+
 void PlainModel::pool_fn(void* user, const float* x_f, const int32_t* ids, int64_t n_tok, int64_t k, float* out,
                          int64_t layer) {
     PlainModel* m = (PlainModel*) user;
@@ -2200,8 +2300,7 @@ bool PlainModel::record_block(const Block& b, int64_t ml, int T, uint32_t& ring,
     else k::native_qsa_rms_norm_weighted(x_, b.post_norm, hn_, (int) N, T, eps, cs);
     k::f32_gemv_fp32_mmvf_multi(hn_, N, b.router, rlog_, E, N, E, T, cs);
     k::router_top10(rlog_, T, (int) E, (int) K, ids_, w_, cs);
-    ++ring;
-    win_.publish(ring, 0, 0, T, hn_, ids_, w_, cs);
+    moe_publish(ring, T, cs);
     if (has_shared_ && !sh_q8) {   // in FP32 between the products
         proj(b.sh_gate, hn_, sh_gate_, T, true);
         proj(b.sh_up, hn_, sh_up_, T, false);
@@ -2218,16 +2317,7 @@ bool PlainModel::record_block(const Block& b, int64_t ml, int T, uint32_t& ring,
         k::native_mmvq(b.sh_down.type, b.sh_down.data, xq_, shared_, (int) FS, (int) N, T, cs);
         k::f32_gemv_fp32_mmvf_multi(hn_, N, b.sh_gate_inp, sh_g_, 1, N, 1, T, cs);
     }
-    if (win_.segmented()) {   // a graph ends where the host must answer the ring
-        strata::gpu::Graph* g = nullptr;
-        if (!strata::gpu::end_capture(cs, &g)) {
-            err = std::string("plain model: segment capture: ") + strata::gpu::last_error();
-            return false;
-        }
-        segs.push_back(g);
-        if (!strata::gpu::begin_capture(cs)) { err = "plain model: begin capture failed"; return false; }
-    }
-    if (!win_.experts(ml, ring, 0, 0, T, cs, err)) return false;
+    if (!moe_experts(ml, ring, T, segs, cs, err)) return false;
     k::native_moe_combine_multi(win_.parts(), w_, has_shared_ ? shared_ : nullptr, moe_out_, N, K, T, cs,
                                 has_shared_ ? sh_g_ : nullptr);
     k::add_inplace(x_, moe_out_, (int64_t) T * N, cs);
@@ -2377,7 +2467,7 @@ bool PlainModel::record(int T, bool mtp, std::string& err) {
         err = std::string("plain model: end capture: ") + strata::gpu::last_error();
         return false;
     }
-    if (win_.segmented()) segs.push_back(g);
+    if (!direct_ && win_.segmented()) segs.push_back(g);
     else exec = g;
     return true;
 }
@@ -2419,6 +2509,14 @@ bool PlainModel::launch_serve(strata::gpu::Graph* g, std::vector<strata::gpu::Gr
         err = std::string("plain model: launch: ") + strata::gpu::last_error();
         return false;
     }
+    if (direct_) {   // XeMaya: the experts planned on the GPU: the graph alone, then the host's counts of its routing
+        if (!strata::gpu::graph_launch(g, cs_) || !strata::gpu::stream_sync(cs_)) {
+            err = std::string("plain model: launch: ") + strata::gpu::last_error();
+            return false;
+        }
+        direct_account(layers, rings, T);
+        return true;
+    }
     win_.reset();
     const bool seg = win_.segmented();
     if (!strata::gpu::graph_launch(seg ? segs[0] : g, cs_)) {
@@ -2457,7 +2555,10 @@ bool PlainModel::forward(const int32_t* tokens, int T, int64_t pos, int32_t* out
 
 bool PlainModel::stage_forward(const int32_t* tokens, int T, int64_t pos, const float* hand_in, std::string& err,
                                bool defer) {
-    if (!record(T, false, err) || !settle_window(err) || !stage(tokens, T, pos, err, first())) return false;
+    // XEMAYA_DECODE_PROFILE=1: a direct stage's windows without a graph, their parts timed (dprof)
+    static const bool decode_profile = std::getenv("XEMAYA_DECODE_PROFILE") != nullptr;
+    dprof_on_ = decode_profile && direct_ && ds_;
+    if (!(dprof_on_ || record(T, false, err)) || !settle_window(err) || !stage(tokens, T, pos, err, first())) return false;
     if (hand_in != nullptr) std::memcpy(h_in_, hand_in, (size_t) T * (size_t) hand_w_ * 4);
     pcie_probe_before();
     const double pool0 = disp_.ms_plan + disp_.ms_actq + disp_.ms_jobs + disp_.ms_run;
@@ -2465,8 +2566,11 @@ bool PlainModel::stage_forward(const int32_t* tokens, int T, int64_t pos, const 
     const bool timing = eager_ == -1 && T == 1;
     const bool eager = eager_ == 1 || (timing && (eager_trial_ & 1) != 0);
     const auto t0 = std::chrono::steady_clock::now();
-    if (!(eager ? run_window(T, false, err)
-                : launch_serve(exec_[(size_t) T], segs_[(size_t) T], moe_trunk_, moe_local_.data(), T, err)))
+    if (dprof_on_) {
+        if (!run_window(T, false, err) || !strata::gpu::stream_sync(cs_)) return false;
+        direct_account(moe_local_.data(), moe_trunk_, T);
+    } else if (!(eager ? run_window(T, false, err)
+                       : launch_serve(exec_[(size_t) T], segs_[(size_t) T], moe_trunk_, moe_local_.data(), T, err)))
         return false;
     if (last()) {
         k::SamplerParams sp = sampler_;

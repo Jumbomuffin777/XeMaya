@@ -22,7 +22,7 @@
 //
 // The per-sequence state lives in device buffers (the rings, the open blocks, the compressed caches), and the host
 // stages each window's positions, visible-row counts and Engram table rows, so one recorded graph a window size serves
-// every position.  The prompt runs in windows for now (no chunked path yet); the model has no MTP layer.
+// every position.  The prompt runs in chunks (src/prefill/plain_prompt_ds41.cpp); the model has no MTP layer.
 #include "strata/core/plain_model.hpp"
 #include "plain_ds41_rope.hpp"
 
@@ -172,8 +172,6 @@ bool PlainModel::load_ds41(std::string& err) {
     opt_.spec = 0;
     model_mtp_ = false;
     has_mtp_ = false;
-    // a layer split cuts only where no layer after the cut reads a compressed cache, a selection or the candidate
-    // blocks of a layer before it (those live on one GPU)
     d_ratios_.clear();
     for (int64_t l = 0; l < L; ++l) {
         const int64_t r = s.compress_ratios[(size_t) l];
@@ -181,27 +179,16 @@ bool PlainModel::load_ds41(std::string& err) {
         if (r > 0 && std::find(d_ratios_.begin(), d_ratios_.end(), r) == d_ratios_.end()) d_ratios_.push_back(r);
     }
     if ((int) d_ratios_.size() > kDsRatios) { err = "plain model: more than 4 distinct compress ratios"; return false; }
-    for (int64_t l = lb_; l < le_; ++l) {
-        const int64_t r = s.compress_ratios[(size_t) l];
-        const bool cand_before = r > 0 && s.cand_src >= 0 && s.cand_src < lb_ && s.topk_src[(size_t) l] == l &&
-                                 s.compress_ratios[(size_t) s.cand_src] == r;
-        if (r > 0 && (s.kv_src[(size_t) l] < lb_ || s.topk_src[(size_t) l] < lb_ || cand_before)) {
-            std::string ok;
-            for (int64_t c = 1; c < L; ++c) {
-                bool fine = true;
-                for (int64_t j = c; j < L && fine; ++j) {
-                    const int64_t rj = s.compress_ratios[(size_t) j];
-                    fine = rj == 0 || (s.kv_src[(size_t) j] >= c && s.topk_src[(size_t) j] >= c &&
-                                       !(s.cand_src >= 0 && s.cand_src < c && s.topk_src[(size_t) j] == j &&
-                                         s.compress_ratios[(size_t) s.cand_src] == rj));
-                }
-                if (fine) ok += (ok.empty() ? "" : ", ") + std::to_string(c);
-            }
-            err = "plain model: DeepSeek-V4.1-Flash cannot be split before block " + std::to_string(lb_) +
-                  " (block " + std::to_string(l) + " reads the compressed rows of a block before it); --layer-split "
-                  "takes: " + ok;
-            return false;
-        }
+    // a layer split cuts anywhere: what the blocks after a cut read of the blocks before it (a KV source's compressed
+    // rows, a selection, the candidate blocks) crosses with the streams (DsCarry)
+    d_in_ = DsCarry();
+    d_out_ = DsCarry();
+    if ((!first() && !ds41_carry(lb_, d_in_, err)) || (!last() && !ds41_carry(le_, d_out_, err))) return false;
+    {
+        const int64_t w[kDsHSections] = {kHC * N, kHC, D, ID, std::max<int64_t>(1, s.idx_top_k), 1,
+                                         std::max<int64_t>(1, s.cand_topk_blocks), 1};
+        d_hoff_[0] = 0;
+        for (int k = 0; k < kDsHSections; ++k) d_hoff_[k + 1] = d_hoff_[k] + w[k];
     }
     cs_ = strata::gpu::stream_create();
     if (cs_ == nullptr) { err = "plain model: stream create failed"; return false; }
@@ -273,6 +260,20 @@ bool PlainModel::load_ds41(std::string& err) {
     d_comp_.assign((size_t) L, nullptr);
     d_rows_.assign((size_t) L, 0);
     d_score_stride_ = 1;
+    // a KV source's compressed cache: this stage's own blocks', and its copy of the one carried over the cut before it
+    auto comp_cache = [&](int64_t l) {
+        d_rows_[(size_t) l] = cells / dblocks_[(size_t) l].ratio + 1;
+        d_score_stride_ = std::max(d_score_stride_, d_rows_[(size_t) l]);
+        float* c = nullptr;
+        if (!strata::gpu::alloc_device(&c, (size_t) (d_rows_[(size_t) l] * (D + ID)) * 4)) {
+            err = "plain model: no VRAM for the compressed KV caches (" + std::to_string(d_rows_[(size_t) l]) + " rows)";
+            return false;
+        }
+        allocs_.push_back(c);
+        d_comp_[(size_t) l] = c;
+        return true;
+    };
+    if (d_in_.kv >= 0 && !comp_cache(d_in_.kv)) return false;
     for (int64_t l = lb_; l < le_; ++l) {
         const DBlock& b = dblocks_[(size_t) l];
         float* p = nullptr;
@@ -280,17 +281,13 @@ bool PlainModel::load_ds41(std::string& err) {
         allocs_.push_back(p);
         d_raw_[(size_t) l] = p;
         if (b.kv_src != l) continue;
-        d_rows_[(size_t) l] = cells / b.ratio + 1;
-        d_score_stride_ = std::max(d_score_stride_, d_rows_[(size_t) l]);
-        float *c = nullptr, *st = nullptr;
-        if (!strata::gpu::alloc_device(&c, (size_t) (d_rows_[(size_t) l] * (D + ID)) * 4) ||
-            !strata::gpu::alloc_device(&st, (size_t) (std::max<int64_t>(1, b.ratio - 1) * 2 * D) * 4)) {
-            err = "plain model: no VRAM for the compressed KV caches (" + std::to_string(d_rows_[(size_t) l]) + " rows)";
+        float* st = nullptr;
+        if (!comp_cache(l)) return false;
+        if (!strata::gpu::alloc_device(&st, (size_t) (std::max<int64_t>(1, b.ratio - 1) * 2 * D) * 4)) {
+            err = "plain model: no VRAM for the compressor's open blocks";
             return false;
         }
-        allocs_.push_back(c);
         allocs_.push_back(st);
-        d_comp_[(size_t) l] = c;
         d_cstate_[(size_t) l] = st;
     }
     const int64_t bs = std::max<int64_t>(1, s.cand_block_size);
@@ -300,7 +297,7 @@ bool PlainModel::load_ds41(std::string& err) {
     // the window's buffers
     const uint64_t T = (uint64_t) MT, UN = (uint64_t) N, UK = (uint64_t) K;
     const uint64_t GI = (uint64_t) (H * D / G), RW = (uint64_t) (s.engram_n_heads * s.engram_head_dim);
-    hand_w_ = kHC * N + kHC;   // a stage hands on the four streams and the lagging pre
+    hand_w_ = d_hoff_[kDsHSections];   // a stage hands on the four streams, the lagging pre and its cut's carry
     if (!mapped(T * UN * 4, (void**) &h_emb_, (void**) &m_emb_) ||
         !mapped(T * (uint64_t) kDsMeta * 4, (void**) &h_dmeta_, (void**) &m_dmeta_) ||
         !mapped((uint64_t) cells * 4 + 64, (void**) &h_dtok_, (void**) &m_dtok_) ||
@@ -370,6 +367,28 @@ bool PlainModel::load_ds41(std::string& err) {
     return true;
 }
 
+bool PlainModel::ds41_carry(int64_t c, DsCarry& carry, std::string& err) const {
+    const ModelSpec& s = spec_;
+    carry = DsCarry();
+    for (int64_t l = c; l < s.n_layer; ++l) {
+        const int64_t r = s.compress_ratios[(size_t) l];
+        if (r <= 0) continue;
+        const int64_t kv = s.kv_src[(size_t) l];
+        if (kv < c) {
+            if (carry.kv >= 0 && carry.kv != kv) {
+                err = "plain model: DeepSeek-V4.1-Flash cannot be split before block " + std::to_string(c) +
+                      " (the blocks after it read two compressed caches made before it)";
+                return false;
+            }
+            carry.kv = kv;
+        }
+        carry.ids = carry.ids || s.topk_src[(size_t) l] < c;
+        carry.cand = carry.cand || (s.topk_src[(size_t) l] == l && s.cand_src >= 0 && s.cand_src < c &&
+                                    s.compress_ratios[(size_t) s.cand_src] == r);
+    }
+    return true;
+}
+
 std::vector<PlainModel::StatePart> PlainModel::ds41_recurrent_parts() const {
     std::vector<StatePart> parts;
     if (!ds_) return parts;
@@ -387,7 +406,7 @@ bool PlainModel::reset_ds41(std::string& err) {
     bool ok = true;
     const int64_t D = spec_.key_length, ID = spec_.idx_key_length;
     for (const StatePart& p : ds41_recurrent_parts()) ok = ok && strata::gpu::memset(p.dev, 0, p.bytes);
-    for (int64_t l = lb_; l < le_; ++l)
+    for (int64_t l = 0; l < le_; ++l)   // the stage's own caches and its copy of a carried one
         if (d_comp_[(size_t) l] != nullptr)
             ok = ok && strata::gpu::memset(d_comp_[(size_t) l], 0, (size_t) (d_rows_[(size_t) l] * (D + ID)) * 4);
     std::memset(h_dtok_, 0, (size_t) opt_.max_cells * 4);
@@ -486,6 +505,7 @@ void PlainModel::record_dattn(const DBlock& b, int64_t l, int T, strata::gpu::St
     k::native_qsa_rms_norm_weighted_q8_1(d_qa_, b.q_a_norm, d_qr_, g_xq_, (int) QL, T, eps, cs);
     gproj(b.q_b, d_qr_, d_q_, T, true, cs);
     if (idx_here) f32_rows(d_qr_, QL, b.idx_q_b, d_iq_, IH * ID, T, cs);
+    dprof(1, cs);
     k::ds41_rope(d_q_, pos, r, false, H, D, T, cs);
     k::ds41_rope(d_kv_, pos, r, false, 1, D, T, cs);
     k::ds41_ring_store(d_kv_, pos, d_ring_, D, T, d_raw_[(size_t) l], cs);
@@ -512,10 +532,16 @@ void PlainModel::record_dattn(const DBlock& b, int64_t l, int T, strata::gpu::St
         }
         k::ds41_topk(d_scores_, nvis, (int) s.idx_top_k, T, d_score_stride_, d_ids_, d_cnt_, cs);
     }
-    k::ds41_sink_attn(d_q_, d_raw_[(size_t) l], d_ring_, pos, (int) s.sliding_window, comp, D + ID,
-                      b.ratio > 0 ? d_ids_ : nullptr, b.ratio > 0 ? d_cnt_ : nullptr, s.idx_top_k, b.sinks,
-                      1.0f / std::sqrt((float) D), (int) H, (int) D, T, d_att_, cs);
+    dprof(2, cs);
+    if (k::ds41_attn_mode() < 2 ||
+        !k::ds41_sink_attn_xmx(d_q_, d_raw_[(size_t) l], d_ring_, pos, (int) s.sliding_window, comp, D + ID,
+                               b.ratio > 0 ? d_ids_ : nullptr, b.ratio > 0 ? d_cnt_ : nullptr, s.idx_top_k, b.sinks,
+                               1.0f / std::sqrt((float) D), (int) H, (int) D, T, d_att_, cs))
+        k::ds41_sink_attn(d_q_, d_raw_[(size_t) l], d_ring_, pos, (int) s.sliding_window, comp, D + ID,
+                          b.ratio > 0 ? d_ids_ : nullptr, b.ratio > 0 ? d_cnt_ : nullptr, s.idx_top_k, b.sinks,
+                          1.0f / std::sqrt((float) D), (int) H, (int) D, T, d_att_, cs);
     k::ds41_rope(d_att_, pos, r, true, H, D, T, cs);
+    dprof(3, cs);
     // the grouped low-rank output: each group's rows of every token through its o_a, then o_b
     const size_t ab = k::native_mmvq_weight_bytes(file_type(b.o_a.type), (int) GI, (int) OL);
     k::glm5_transpose_abd(d_att_, d_attT_, T, G, GI, cs);
@@ -526,6 +552,15 @@ void PlainModel::record_dattn(const DBlock& b, int64_t l, int T, strata::gpu::St
                        (int) OL, T, cs);
     k::glm5_transpose_abd(d_oaT_, d_oa_, G, T, OL, cs);
     gproj(b.o_b, d_oa_, mix_, T, false, cs);
+    dprof(4, cs);
+}
+
+void PlainModel::dprof(int k, strata::gpu::Stream cs) {
+    if (!dprof_on_) return;
+    strata::gpu::stream_sync(cs);
+    const auto now = std::chrono::steady_clock::now();
+    dprof_ms_[k] += std::chrono::duration<double, std::milli>(now - dprof_t_).count();
+    dprof_t_ = now;
 }
 
 bool PlainModel::record_dmoe(const DBlock& b, int64_t ml, int T, uint32_t& ring, std::vector<strata::gpu::Graph*>& segs,
@@ -535,8 +570,7 @@ bool PlainModel::record_dmoe(const DBlock& b, int64_t ml, int T, uint32_t& ring,
     f32_rows(hn_, N, b.router, rlog_, E, T, cs);
     const float scale = s.expert_weights_scale > 0 ? (float) s.expert_weights_scale : 1.0f;
     k::ds41_router(rlog_, b.router_b, T, (int) E, (int) K, s.expert_weights_norm && K > 1, scale, ids_, w_, cs);
-    ++ring;
-    win_.publish(ring, 0, 0, T, hn_, ids_, w_, cs);
+    moe_publish(ring, T, cs);
     {   // the shared expert while the host serves: gate / up from hn_'s q8_1, the clamp, down
         const int FW = b.ffn_gate.n_out;
         if (b.ffn_gate.type != b.ffn_up.type ||
@@ -548,16 +582,9 @@ bool PlainModel::record_dmoe(const DBlock& b, int64_t ml, int T, uint32_t& ring,
         k::glm5_swiglu_clamp(g_ffg_, g_ffu_, g_ffg_, (int64_t) T * FW, b.clamp, cs);
         gproj(b.ffn_down, g_ffg_, shared_, T, false, cs);
     }
-    if (win_.segmented()) {   // a graph ends where the host must answer the ring
-        strata::gpu::Graph* g = nullptr;
-        if (!strata::gpu::end_capture(cs, &g)) {
-            err = std::string("plain model: segment capture: ") + strata::gpu::last_error();
-            return false;
-        }
-        segs.push_back(g);
-        if (!strata::gpu::begin_capture(cs)) { err = "plain model: begin capture failed"; return false; }
-    }
-    if (!win_.experts(ml, ring, 0, 0, T, cs, err)) return false;
+    dprof(5, cs);
+    if (!moe_experts(ml, ring, T, segs, cs, err)) return false;
+    dprof(6, cs);
     k::native_moe_combine_multi(win_.parts(), w_, shared_, moe_out_, N, K, T, cs);
     return true;
 }
@@ -567,16 +594,42 @@ bool PlainModel::record_window_ds41(int T, strata::gpu::Stream cs, std::string& 
     const int64_t N = s.n_embd, MT = opt_.max_t;
     const float eps = (float) s.rms_eps, hc_eps = (float) s.hc_eps;
     const int iters = (int) s.hc_sinkhorn_iters;
+    if (dprof_on_) {
+        strata::gpu::stream_sync(cs);
+        dprof_t_ = std::chrono::steady_clock::now();
+    }
     k::copy_i32_from_mapped(d_meta_, m_dmeta_, (int64_t) kDsMeta * MT, cs);
     // pre of the sub-layer before (pp), of this layer's attention (pa) and FFN (pf)
     float *pp = d_pre_[0], *pa = d_pre_[1], *pf = d_pre_[2];
+    // the hand-off's sections of this window's T rows (d_hoff_)
+    auto hin = [&](int k) { return m_in_ + (size_t) d_hoff_[k] * (size_t) T; };
+    auto hout = [&](int k) { return m_hand_ + (size_t) d_hoff_[k] * (size_t) T; };
     if (first()) {   // the four streams from the embeddings; layer 0's attention reads stream 0
         k::copy_from_mapped(x_, m_emb_, (int64_t) T * N, cs);
         k::glm5_hc_init(x_, g_hs_, N, T, cs);
         k::copy_from_mapped(pp, m_done_, (int64_t) T * kHC, cs);
     } else {         // as the stage before left them
         k::copy_from_mapped(g_hs_, m_in_, (int64_t) T * kHC * N, cs);
-        k::copy_from_mapped(pp, m_in_ + (size_t) T * kHC * (size_t) N, (int64_t) T * kHC, cs);
+        k::copy_from_mapped(pp, hin(kDsHPre), (int64_t) T * kHC, cs);
+        if (d_in_.kv >= 0) {   // the rows the window closes in the carried KV source: into this stage's copy of its cache
+            const int64_t D = s.key_length, ID = s.idx_key_length, kv = d_in_.kv;
+            k::copy_from_mapped(d_lat_, hin(kDsHLat), (int64_t) T * D, cs);
+            k::copy_from_mapped(d_ik_, hin(kDsHIk), (int64_t) T * ID, cs);
+            k::ds41_comp_store(d_lat_, d_ik_, d_meta_, (int) dblocks_[(size_t) kv].ratio, D, ID, T, d_comp_[(size_t) kv],
+                               d_rows_[(size_t) kv], cs);
+            if (d_out_.kv == kv) {   // and on to the next stage
+                k::copy_from_mapped(hout(kDsHLat), d_lat_, (int64_t) T * D, cs);
+                k::copy_from_mapped(hout(kDsHIk), d_ik_, (int64_t) T * ID, cs);
+            }
+        }
+        if (d_in_.ids) {
+            k::copy_i32_from_mapped(d_ids_, (const int32_t*) hin(kDsHIds), (int64_t) T * ds41_hw(kDsHIds), cs);
+            k::copy_i32_from_mapped(d_cnt_, (const int32_t*) hin(kDsHCnt), T, cs);
+        }
+        if (d_in_.cand) {
+            k::copy_i32_from_mapped(d_cand_, (const int32_t*) hin(kDsHCand), (int64_t) T * ds41_hw(kDsHCand), cs);
+            k::copy_i32_from_mapped(d_ncand_, (const int32_t*) hin(kDsHNcand), T, cs);
+        }
     }
     // the mixes of the streams as they are: post and comb for the write, pre for the read one sub-layer on
     auto hc_mixes = [&](const float* fn, const float* scale, const float* base, float* pre) {
@@ -599,24 +652,52 @@ bool PlainModel::record_window_ds41(int T, strata::gpu::Stream cs, std::string& 
         hc_mixes(b.hc_attn_fn, b.hc_attn_scale, b.hc_attn_base, pa);
         k::ds41_hc_collapse(g_hs_, pp, g_y_, N, T, cs);
         k::native_qsa_rms_norm_weighted_q8_1(g_y_, b.attn_norm, hn_, g_xq_, (int) N, T, eps, cs);
+        dprof(0, cs);
         record_dattn(b, l, T, cs);
+        if (d_out_.kv == l) {   // this block's closed rows cross the cut after the stage (d_lat_, d_ik_ as stored)
+            k::copy_from_mapped(hout(kDsHLat), d_lat_, (int64_t) T * s.key_length, cs);
+            k::copy_from_mapped(hout(kDsHIk), d_ik_, (int64_t) T * s.idx_key_length, cs);
+        }
         k::glm5_hc_post(mix_, g_hs_, g_post_, g_comb_, g_hs_, N, T, cs);
         // ---- the FFN
         hc_mixes(b.hc_ffn_fn, b.hc_ffn_scale, b.hc_ffn_base, pf);
         k::ds41_hc_collapse(g_hs_, pa, g_y_, N, T, cs);
         k::native_qsa_rms_norm_weighted_q8_1(g_y_, b.ffn_norm, hn_, g_xq_, (int) N, T, eps, cs);
+        dprof(0, cs);
         if (!record_dmoe(b, s.moe_index(l), T, ring, segs_[(size_t) T], cs, err)) return false;
         k::glm5_hc_post(moe_out_, g_hs_, g_post_, g_comb_, g_hs_, N, T, cs);
+        dprof(7, cs);
         std::swap(pp, pf);
     }
+    auto report = [&] {
+        if (!dprof_on_) return;
+        dprof(7, cs);
+        if (++dprof_n_ % 64 != 0) return;
+        std::fprintf(stderr, "strata plain: decode profile, blocks %lld..%lld, ms a window of %d (64 windows): mHC and "
+                             "norms %.2f, attention projections %.2f, state and indexer %.2f, attention %.2f, its "
+                             "output %.2f, router and shared expert %.2f, routed experts %.2f, combine and head %.2f\n",
+                     (long long) lb_, (long long) le_ - 1, T, dprof_ms_[0] / 64, dprof_ms_[1] / 64, dprof_ms_[2] / 64,
+                     dprof_ms_[3] / 64, dprof_ms_[4] / 64, dprof_ms_[5] / 64, dprof_ms_[6] / 64, dprof_ms_[7] / 64);
+        for (double& v : dprof_ms_) v = 0;
+    };
     if (!last()) {
         k::copy_from_mapped(m_hand_, g_hs_, (int64_t) T * kHC * N, cs);
-        k::copy_from_mapped(m_hand_ + (size_t) T * kHC * (size_t) N, pp, (int64_t) T * kHC, cs);
+        k::copy_from_mapped(hout(kDsHPre), pp, (int64_t) T * kHC, cs);
+        if (d_out_.ids) {   // the last selection before the cut: made here or carried in
+            k::copy_i32_from_mapped((int32_t*) hout(kDsHIds), d_ids_, (int64_t) T * ds41_hw(kDsHIds), cs);
+            k::copy_i32_from_mapped((int32_t*) hout(kDsHCnt), d_cnt_, T, cs);
+        }
+        if (d_out_.cand) {
+            k::copy_i32_from_mapped((int32_t*) hout(kDsHCand), d_cand_, (int64_t) T * ds41_hw(kDsHCand), cs);
+            k::copy_i32_from_mapped((int32_t*) hout(kDsHNcand), d_ncand_, T, cs);
+        }
+        report();
         return true;
     }
     k::ds41_hc_collapse(g_hs_, pp, x_, N, T, cs);
     k::native_qsa_rms_norm_weighted(x_, out_norm_, hn_, (int) N, T, eps, cs);
     head_logits(hn_, T, cs);   // the tokens are picked after the graph (forward), with the run's sampler
+    report();
     return true;
 }
 

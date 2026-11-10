@@ -42,6 +42,7 @@
 #include "strata/kernels/sampler.hpp"
 #include "strata/spec/draft_policy.hpp"
 
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <functional>
@@ -649,8 +650,35 @@ private:
     bool ds41_engram_rows(int64_t e, int64_t p, float* dst) const;
     bool prompt_chunks_ds41(const int32_t* tokens, int64_t n, int64_t pos, int32_t* out, float* logits,
                             std::string& err, int64_t c_begin, int64_t c_end, const float* hand_in);
-    int64_t hand_cap_ = 0;   ///< the rows hand_host_ was allocated for (the lagging pre's rows lie after them)
+    int64_t hand_cap_ = 0;   ///< the rows hand_host_ was allocated for (the hand-off's later sections lie after them)
+    /// What a cut of the layer split carries besides the streams and the lagging pre, for the blocks after it that
+    /// read state made before it: the compressed rows of a KV-source block (each stage after the cut keeps its own
+    /// copy of that block's cache and stores the rows a window closes), the last selection (a block after the cut
+    /// reads the top-k of a source before it), the candidate blocks (a top-k source after the cut keeps to them)
+    struct DsCarry {
+        int64_t kv = -1;   ///< the KV-source block whose closed rows cross the cut, -1 none
+        bool ids = false, cand = false;
+    };
+    /// The carry of a cut before block c; false (err) when blocks after it read two KV sources before it
+    bool ds41_carry(int64_t c, DsCarry& carry, std::string& err) const;
+    DsCarry d_in_, d_out_;   ///< this stage's cuts: before its first block, after its last
+    /// The hand-off's sections, floats a row from the row's start (a section's rows are contiguous: section k of T
+    /// rows starts at d_hoff_[k] * T in a window's buffer, at d_hoff_[k] * hand_cap_ in hand_host_): the streams, the
+    /// lagging pre, the compressed rows, their index keys, the selection, its count, the candidate blocks, their count
+    enum { kDsHStreams, kDsHPre, kDsHLat, kDsHIk, kDsHIds, kDsHCnt, kDsHCand, kDsHNcand, kDsHSections };
+    int64_t d_hoff_[kDsHSections + 1] = {};
+    /// A section's floats a row
+    int64_t ds41_hw(int k) const { return d_hoff_[k + 1] - d_hoff_[k]; }
     bool record_window_ds41(int T, strata::gpu::Stream cs, std::string& err);
+    /// XEMAYA_DECODE_PROFILE=1 (measuring; a stage with direct_): the decode windows run without a graph and this
+    /// marks the end of part `k` of a block (the stream waited for), the parts' times summed and printed every 64
+    /// windows: 0 the mHC mixes and norms, 1 the attention's projections, 2 the state and the indexer, 3 the
+    /// attention, 4 its output, 5 the router and the shared expert, 6 the routed experts, 7 the combine and the head
+    void dprof(int k, strata::gpu::Stream cs);
+    bool dprof_on_ = false;
+    double dprof_ms_[8] = {};
+    int64_t dprof_n_ = 0;
+    std::chrono::steady_clock::time_point dprof_t_;
     void record_dattn(const DBlock& b, int64_t l, int T, strata::gpu::Stream cs);
     bool record_dmoe(const DBlock& b, int64_t ml, int T, uint32_t& ring, std::vector<strata::gpu::Graph*>& segs,
                      strata::gpu::Stream cs, std::string& err);
@@ -729,6 +757,22 @@ private:
     ExpertCache cache_;
     ExpertDispatch disp_;
     MoeWindow win_;
+    /// XeMaya: every expert of this stage's MoE layers stands in a VRAM slot from the load on, and the decode windows
+    /// plan them on the GPU (MoeWindow::direct) from d_slot_tab_ ([local MoE layer][expert] slot addresses, device
+    /// memory): no ring, a window is one graph.  h_dids_ / m_dids_ (mapped, [local MoE layer][max_t][k]) take each
+    /// layer's ids for the host's counts after the window (direct_account)
+    bool direct_ = false;
+    const unsigned long long* d_slot_tab_ = nullptr;
+    int32_t *h_dids_ = nullptr, *m_dids_ = nullptr;
+    /// A window's routing in the graph being recorded, from hn_ / ids_ / w_: the ring to the host (not when direct_)
+    void moe_publish(uint32_t& ring, int T, strata::gpu::Stream cs);
+    /// ... and the experts of MoE layer `ml` into win_.parts(): through the host's plan (the graph cut before it
+    /// where the window is segmented), or planned on the GPU
+    bool moe_experts(int64_t ml, uint32_t ring, int T, std::vector<strata::gpu::Graph*>& segs, strata::gpu::Stream cs,
+                     std::string& err);
+    /// After a direct window of T rows: the host's counts of the layers' routing (heat, the routes' dump, the hits,
+    /// the adaptive tier's record)
+    void direct_account(const int64_t* layers, int64_t n_layers, int T);
     std::vector<int32_t> res_;                    ///< [moe layer][expert] slot or -1
     std::vector<std::vector<int32_t>> free_;      ///< per moe layer, its free slots
     std::vector<int64_t> slot_layer_;             ///< per slot, the moe layer it holds experts of

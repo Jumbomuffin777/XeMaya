@@ -261,6 +261,43 @@ bool MoeWindow::experts(int64_t layer, uint32_t ring, int grp, int tb, int n, st
     return true;
 }
 
+bool MoeWindow::direct(int64_t layer, int tb, int n, const float* x, const int32_t* ids,
+                       const unsigned long long* slots, strata::gpu::Stream cs, std::string& err) {
+    using namespace strata::kernels;
+    const auto& lay = cpu::expert_layout();
+    if (layer < 0 || layer >= lay.n_layers || !lay.native) {
+        err = "moe window: the direct plan takes a native MoE layer";
+        return false;
+    }
+    const int64_t N = sh_.n_embd, K = sh_.k;
+    const int64_t cap = (int64_t) n * K, capx = (int64_t) sh_.max_t * K;
+    int32_t* pl = plan_;
+    int32_t* p_counts = pl;
+    int32_t* p_start = pl + 4;
+    int32_t* p_dst = p_start + capx + 1;
+    int32_t* p_tok = p_dst + capx;
+    auto* p_ptr = reinterpret_cast<unsigned long long*>(pl + plan_ptr_off(capx));
+    float* out = parts_ + (size_t) tb * K * N;
+    try {
+        const auto& f = lay.fmt[(size_t) layer];
+        const NativeExpertLayout L = native_expert_layout(f.gu_type, f.d_type, f.n_embd, f.n_ff, f.up_type);
+        moe_direct_plan(ids, slots, cap, (int) K, sh_.n_expert, p_counts, p_start, p_dst, p_tok, p_ptr, cs);
+        if (f.gu_type == 30) {
+            copy_from_mapped(nat_xf_ + (size_t) tb * N, x, (int64_t) n * N, cs);
+            native_expert_grouped_bf16(L, p_ptr, p_start, p_counts, p_dst, p_tok, cap, cap, nat_xf_ + (size_t) tb * N,
+                                       hit_scratch_, out, cs, cap);
+        } else {
+            quantize_q8_1_rows(x, n, N, nat_xq_ + (size_t) tb * (N / 32) * 36, cs);
+            native_expert_grouped(L, p_ptr, p_start, p_counts, p_dst, p_tok, cap, cap,
+                                  nat_xq_ + (size_t) tb * (N / 32) * 36, hit_scratch_, out, cs, cap);
+        }
+    } catch (const std::exception& e) {
+        err = "moe window, MoE layer " + std::to_string(layer) + " (direct): " + e.what();
+        return false;
+    }
+    return true;
+}
+
 void MoeWindow::reset() {
     *(volatile uint32_t*) h_seq_ = 0;
     *(volatile uint32_t*) h_flag_ = 0;

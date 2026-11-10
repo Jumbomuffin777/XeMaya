@@ -112,18 +112,27 @@ bool PlainModel::prompt_chunks_ds41(const int32_t* tokens, int64_t n, int64_t po
         const int64_t L = n_moe_;
         std::vector<int32_t> routes(disp_.usage.empty() ? 0 : (size_t) (L * P.T * K));
         const int64_t c_last = std::min(n, c_end);
-        if (!first()) {   // the rows handed on (the streams, then the lagging pre), into this stage's own pinned memory
+        // the hand-off's section k (d_hoff_) from the row of token c0 on, in this stage's pinned rows
+        auto hsec = [&](int sec, int64_t c0) {
+            return hand_host_ + d_hoff_[sec] * hand_cap_ + (c0 - c_begin) * ds41_hw(sec);
+        };
+        const int64_t top_k = ds41_hw(kDsHIds), cand_w = ds41_hw(kDsHCand);
+        if (!first()) {   // the rows handed on, section by section, into this stage's own pinned memory
             int64_t prev_cap = hand_cap_;
             const std::vector<PlainModel*> ch = root_->chain();
             for (size_t i = 1; i < ch.size(); ++i)
                 if (ch[i] == this) prev_cap = ch[i - 1]->hand_cap_;
-            std::memcpy(hand_host_, hand_in, (size_t) ((c_last - c_begin) * kHC * N) * 4);
-            std::memcpy(hand_host_ + hand_cap_ * kHC * N, hand_in + prev_cap * kHC * N, (size_t) ((c_last - c_begin) * kHC) * 4);
+            const bool take[kDsHSections] = {true, true, d_in_.kv >= 0, d_in_.kv >= 0, d_in_.ids, d_in_.ids, d_in_.cand,
+                                             d_in_.cand};
+            for (int sec = 0; sec < kDsHSections; ++sec)
+                if (take[sec])
+                    std::memcpy(hand_host_ + d_hoff_[sec] * hand_cap_, hand_in + d_hoff_[sec] * prev_cap,
+                                (size_t) ((c_last - c_begin) * ds41_hw(sec)) * 4);
         }
         for (int64_t c0 = c_begin; c0 < c_last; c0 += P.T) {
             const int64_t T = std::min<int64_t>(P.T, c_last - c0), p0 = pos + c0;
-            float* hand = hand_host_ != nullptr ? hand_host_ + (c0 - c_begin) * kHC * N : nullptr;
-            float* hand_pre = hand_host_ != nullptr ? hand_host_ + hand_cap_ * kHC * N + (c0 - c_begin) * kHC : nullptr;
+            float* hand = hand_host_ != nullptr ? hsec(kDsHStreams, c0) : nullptr;
+            float* hand_pre = hand_host_ != nullptr ? hsec(kDsHPre, c0) : nullptr;
             // the chunk's staging on the host: the tokens, the embeddings, the positions' records, Engram's rows
             for (int64_t t = 0; t < T; ++t) {
                 const int32_t tok = tokens[c0 + t];
@@ -174,6 +183,28 @@ bool PlainModel::prompt_chunks_ds41(const int32_t* tokens, int64_t n, int64_t po
             }
             if (first()) k::glm5_hc_init(P.x, P.g_hs, N, T, cs);
             const int32_t* mpos = P.d_meta;
+            if (!first()) {   // the cut's carry (DsCarry): the closed rows into this stage's copy of the cache (they
+                              // stay in the pinned rows for a next stage that reads them too), the selection, the blocks
+                bool ok = true;
+                if (d_in_.kv >= 0) {
+                    const int64_t kv = d_in_.kv;
+                    ok = strata::gpu::copy_async(P.d_lat, hsec(kDsHLat, c0), (size_t) (T * D) * 4, cs) &&
+                         strata::gpu::copy_async(P.g_ik, hsec(kDsHIk, c0), (size_t) (T * ID) * 4, cs);
+                    if (ok)
+                        k::ds41_comp_store(P.d_lat, P.g_ik, mpos, (int) dblocks_[(size_t) kv].ratio, D, ID, T,
+                                           d_comp_[(size_t) kv], d_rows_[(size_t) kv], cs);
+                }
+                if (d_in_.ids)
+                    ok = ok && strata::gpu::copy_async(P.d_ids, hsec(kDsHIds, c0), (size_t) (T * top_k) * 4, cs) &&
+                         strata::gpu::copy_async(P.d_cnt, hsec(kDsHCnt, c0), (size_t) T * 4, cs);
+                if (d_in_.cand)
+                    ok = ok && strata::gpu::copy_async(P.d_cand, hsec(kDsHCand, c0), (size_t) (T * cand_w) * 4, cs) &&
+                         strata::gpu::copy_async(P.d_ncand, hsec(kDsHNcand, c0), (size_t) T * 4, cs);
+                if (!ok) {
+                    err = std::string("plain prompt: the carried rows: ") + strata::gpu::last_error();
+                    return false;
+                }
+            }
             mark(9);
             auto hc_mixes = [&](const float* fn, const float* scale, const float* base, float* pre) {
                 k::f32_gemm_rows(P.g_hs, kHC * N, fn, P.g_mixes, kMix, kHC * N, kMix, T, cs);
@@ -233,6 +264,12 @@ bool PlainModel::prompt_chunks_ds41(const int32_t* tokens, int64_t n, int64_t po
                     k::ds41_rope(P.g_ik, bpos, ri, false, 1, ID, T, cs);
                     k::ds41_comp_store(P.d_lat, P.g_ik, mpos, (int) b.ratio, D, ID, T, d_comp_[(size_t) l],
                                        d_rows_[(size_t) l], cs);
+                    if (d_out_.kv == l &&   // the closed rows cross the cut after this stage
+                        (!strata::gpu::copy_async(hsec(kDsHLat, c0), P.d_lat, (size_t) (T * D) * 4, cs) ||
+                         !strata::gpu::copy_async(hsec(kDsHIk, c0), P.g_ik, (size_t) (T * ID) * 4, cs))) {
+                        err = std::string("plain prompt: the compressed rows to the next GPU: ") + strata::gpu::last_error();
+                        return false;
+                    }
                 }
                 const float* comp = b.ratio > 0 ? d_comp_[(size_t) b.kv_src] : nullptr;
                 if (idx_here) {
@@ -249,9 +286,13 @@ bool PlainModel::prompt_chunks_ds41(const int32_t* tokens, int64_t n, int64_t po
                     k::ds41_topk(P.d_scores, nvis, (int) s.idx_top_k, T, d_score_stride_, P.d_ids, P.d_cnt, cs);
                 }
                 mark(2);
-                k::ds41_sink_attn(P.qcur, d_raw_[(size_t) l], d_ring_, mpos, (int) s.sliding_window, comp, D + ID,
-                                  b.ratio > 0 ? P.d_ids : nullptr, b.ratio > 0 ? P.d_cnt : nullptr, s.idx_top_k, b.sinks,
-                                  1.0f / std::sqrt((float) D), (int) H, (int) D, T, P.attn, cs);
+                if (k::ds41_attn_mode() < 1 ||
+                    !k::ds41_sink_attn_xmx(P.qcur, d_raw_[(size_t) l], d_ring_, mpos, (int) s.sliding_window, comp, D + ID,
+                                           b.ratio > 0 ? P.d_ids : nullptr, b.ratio > 0 ? P.d_cnt : nullptr, s.idx_top_k,
+                                           b.sinks, 1.0f / std::sqrt((float) D), (int) H, (int) D, T, P.attn, cs))
+                    k::ds41_sink_attn(P.qcur, d_raw_[(size_t) l], d_ring_, mpos, (int) s.sliding_window, comp, D + ID,
+                                      b.ratio > 0 ? P.d_ids : nullptr, b.ratio > 0 ? P.d_cnt : nullptr, s.idx_top_k,
+                                      b.sinks, 1.0f / std::sqrt((float) D), (int) H, (int) D, T, P.attn, cs);
                 k::ds41_rope(P.attn, mpos, r, true, H, D, T, cs);
                 mark(3);
                 // the grouped low-rank output: each group's rows of every token through its o_a, then o_b
@@ -292,7 +333,13 @@ bool PlainModel::prompt_chunks_ds41(const int32_t* tokens, int64_t n, int64_t po
                 std::swap(pp, pf);
             }
             if (!last() && (!strata::gpu::copy_async(hand, P.g_hs, (size_t) (T * kHC * N) * 4, cs) ||
-                            !strata::gpu::copy_async(hand_pre, pp, (size_t) (T * kHC) * 4, cs))) {
+                            !strata::gpu::copy_async(hand_pre, pp, (size_t) (T * kHC) * 4, cs) ||
+                            (d_out_.ids &&
+                             (!strata::gpu::copy_async(hsec(kDsHIds, c0), P.d_ids, (size_t) (T * top_k) * 4, cs) ||
+                              !strata::gpu::copy_async(hsec(kDsHCnt, c0), P.d_cnt, (size_t) T * 4, cs))) ||
+                            (d_out_.cand &&
+                             (!strata::gpu::copy_async(hsec(kDsHCand, c0), P.d_cand, (size_t) (T * cand_w) * 4, cs) ||
+                              !strata::gpu::copy_async(hsec(kDsHNcand, c0), P.d_ncand, (size_t) T * 4, cs))))) {
                 err = std::string("plain prompt: the rows to the next GPU: ") + strata::gpu::last_error();
                 return false;
             }

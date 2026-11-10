@@ -106,6 +106,11 @@ void fetch_blobs(const unsigned long long* src, const int32_t* n, uint8_t* dst, 
 void fetch_blobs_tune(void* stream);
 /// ptr[k] = base + k * blob_bytes for k < *n (the staged copies `fetch_blobs` made).
 void rebase_ptrs(unsigned long long* ptr, const int32_t* n, uint8_t* base, int64_t blob_bytes, void* stream);
+/// XeMaya: a window's expert plan made on the device, for a layer whose every expert stands in a VRAM slot
+/// (MoeWindow::direct): entry i is routed row i of ids [n_entries] (k a token), a group of its own - counts = (n, n,
+/// 0, 0), start[i] = dst[i] = i, tok[i] = i / k, ptr[i] = slots[ids[i]] (an id outside [0, n_expert) takes expert 0).
+void moe_direct_plan(const int32_t* ids, const unsigned long long* slots, int64_t n_entries, int k, int64_t n_expert,
+                     int32_t* counts, int32_t* start, int32_t* dst, int32_t* tok, unsigned long long* ptr, void* stream);
 
 // ---- the MTP draft layer (src/core/mtp.cpp)
 /// R[t][c][:] = h[t][c][:] + e[t][:]  (the embedding branch added to every stream).

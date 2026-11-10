@@ -67,6 +67,11 @@ public:
                  strata::gpu::Stream cs);
     /// The experts of MoE layer `layer` for the same ring: parts() rows [tb * k, (tb + n) * k).
     bool experts(int64_t layer, uint32_t ring, int grp, int tb, int n, strata::gpu::Stream cs, std::string& err);
+    /// XeMaya: publish and experts in one, without the host, for a MoE layer whose every expert stands in a VRAM slot:
+    /// `slots` [n_expert] the layer's slot addresses (device memory), the plan made on the device from `ids`
+    /// (moe_direct_plan).  No ring: the caller's graph is not cut here, and `serve` is not told of this layer.
+    bool direct(int64_t layer, int tb, int n, const float* x, const int32_t* ids, const unsigned long long* slots,
+                strata::gpu::Stream cs, std::string& err);
     /// Device (max_t * k, n_embd): the experts' outputs, row t * k + j for token t's j-th routed expert.
     float* parts() const { return parts_; }
 
