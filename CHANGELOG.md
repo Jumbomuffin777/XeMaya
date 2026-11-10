@@ -4,7 +4,50 @@ SPDX-License-Identifier: LGPL-3.0-or-later
 -->
 # Changelog
 
-## Unreleased — documentation audit (2026-11-10)
+## 0.1.0-alpha.1 — 2026-11-10
+
+The first public release: an alpha for **Linux and Intel Arc GPUs**. Built on XeStrata xe0.2.8-1.
+
+### What is in it
+
+- The engine for four model families, each as far as its record goes ([README](README.md#models)):
+  Qwen3.8-Flash-Next (inherited from XeStrata), GLM-5.3-Flash, DeepSeek-V4.1-Flash, and MiniMax-M3.1-Flash
+  (experimental, slow). Layer split across several Arc GPUs, expert tiers in VRAM, RAM and on the drive,
+  XMX attention for GLM, DeepSeek and MiniMax.
+- The OpenAI- and Anthropic-compatible server, with newer Strata tool-calling and request-lifecycle fixes brought
+  over, and DeepSeek-V4.1's DSML tool calls (read by the server; not exercised with the model).
+- `tools/xemaya/catalog.py`: finds local GGUFs of the four families and writes server configs and tokenizers.
+- A release folder for Linux (`tools/xemaya/release.sh`): the engine built with Intel oneAPI 2026.2, the
+  `xemaya.sh` command (`setup`, `doctor`, `selftest`, `models`, `serve`), [INSTALL.md](INSTALL.md), checksums.
+- The engine says its XeMaya version beside XeStrata's (`strata --version`).
+
+### How it was checked
+
+- The release build, from a clean export of the commit: 13 host tests and the GLM, DeepSeek and MiniMax kernel
+  parity tests on the OpenCL CPU device pass. No GPU was opened by the release build or its checks.
+- A clean install of the release archive in fresh containers without a GPU: checksums, `xemaya.sh setup`, the
+  libraries resolve, the three CPU-device parity tests pass, the server answers against its mock engine.
+- The server suite: 959 passed, 23 skipped on the development host; 938 passed, 44 skipped in a clean
+  Ubuntu 24.04 container.
+- GPU results (the README's table) are records of 2026-11-09 and 2026-11-10 made with development builds of
+  earlier commits on Arc Pro B70 + B65 + B60. They were not rerun with the release binary.
+- Licences: `reuse lint` passes; gitleaks finds nothing in XeMaya's own commits.
+
+### Experimental, not part of this release's support
+
+- The hybrid segment (a model's last blocks in a worker on another machine): checked on the CPU device over the
+  loopback only.
+- The Windows build with the CUDA target: cross-compiles and links; never run.
+- NVIDIA and AMD GPUs, the free and contrib-llvm builds with intel/llvm, and the inherited deb/rpm packaging:
+  not built or run by XeMaya.
+
+### Known problems
+
+- One MiniMax-M3.1-Flash run with its experts held in RAM (without `--mmap-experts`) ended in a GPU engine reset;
+  the cause is not known.
+- After the shared expert-tier changes, the GLM-5.3 and Qwen3.8 forced-token checks were not rerun on GPUs.
+
+## Documentation audit (2026-11-10)
 
 Audited source: `b59488e2d5dc69337c3dc30664d26e1b7fe577bb`. This update changes documentation
 and funding metadata, not engine behaviour. Dates below refer to existing records, not new measurements.

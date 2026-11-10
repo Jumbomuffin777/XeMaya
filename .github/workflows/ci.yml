@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: 2026 Jumbomuffin777 and the XeMaya contributors
+# SPDX-License-Identifier: LGPL-3.0-or-later
+# What a hosted runner can check without a GPU or Intel's compiler: the server's tests against the fake engine, the
+# licence headers (REUSE) and the shell scripts XeMaya added.  The engine's build and its tests run on the release
+# machine (tools/xemaya/release.sh).
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  serve:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt pytest
+      - run: python -m pytest -q -p no:cacheprovider serve
+  licences:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: pipx install reuse
+      - run: reuse lint
+      - run: shellcheck tools/xemaya/release.sh tools/xemaya/xemaya.sh

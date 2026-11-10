@@ -8,12 +8,12 @@ SPDX-License-Identifier: LGPL-3.0-or-later AND MIT
 
 **Native inference for Intel Arc. Built on XeStrata. Targeting Project Maya's models.**
 
-[![Status: experimental](https://img.shields.io/badge/status-experimental-orange)](xemaya/STATUS.md)
+[![Status: alpha](https://img.shields.io/badge/status-alpha-orange)](xemaya/STATUS.md)
 [![Backend: SYCL / Level Zero](https://img.shields.io/badge/backend-SYCL%20%2F%20Level%20Zero-blue)](docs/XE.md)
 [![Licence: LGPL v3+](https://img.shields.io/badge/licence-LGPL--3.0--or--later-blue)](COPYING.LESSER)
 [![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-Jumbomuffin777-FFDD00?logo=buymeacoffee&logoColor=000)](https://buymeacoffee.com/Jumbomuffin777)
 
-[Models](#models) · [Recorded results](#status) · [Build](#building) ·
+[Install](#install) · [Models](#models) · [Recorded results](#status) · [Build](#building) ·
 [Model discovery](#model-discovery-and-serving) · [Documentation](DOCUMENTATION.md) · [Changelog](CHANGELOG.md)
 
 XeMaya is an Intel Arc-first inference engine for Qwen3.8-Flash-Next, GLM-5.3-Flash,
@@ -21,10 +21,29 @@ DeepSeek-V4.1-Flash and experimental MiniMax-M3.1-Flash. It runs native SYCL / L
 including Intel XMX paths, with multi-GPU layer splitting and VRAM / RAM / SSD expert tiers.
 The engine is built on XeStrata, rather than a llama.cpp server wrapper or a CUDA compatibility layer.
 
-> **Early development — snapshot: 2026-11-10, source `b59488e2d`.** Reference agreement is limited
-> to the models, prompts and hardware recorded below; it does not establish production readiness.
-> MiniMax's RAM-copy run triggered a GPU engine reset; the cause is undetermined and development GPU
-> work was stopped. See the latest [status handoff](xemaya/STATUS.md) before running development jobs.
+> **Alpha (0.1.0-alpha.1, 2026-11-10): Linux, Intel Arc GPUs.** Reference agreement is limited to the
+> models, prompts and hardware recorded below; it does not establish production readiness. The release
+> binary was checked without a GPU (host tests, CPU-device kernel parity, a clean install); the GPU
+> results below come from development builds of earlier commits. One MiniMax run that held its experts
+> in RAM ended in a GPU engine reset of unknown cause. Read the [known limitations](INSTALL.md#known-limitations).
+
+## Install
+
+Download `xemaya-<version>-linux-x86_64.tar.xz` and `SHA256SUMS` from the
+[releases](https://github.com/Jumbomuffin777/XeMaya/releases), then:
+
+```bash
+sha256sum -c SHA256SUMS --ignore-missing
+tar -xf xemaya-*-linux-x86_64.tar.xz && cd xemaya-*/
+./xemaya.sh setup                          # a venv in the folder: the server's packages, Intel's SYCL and oneMKL run-time
+./xemaya.sh doctor                         # the engine's version and the GPUs it sees
+./xemaya.sh models /path/to/your/models    # what it found, as JSON; writes configs and tokenizers
+./xemaya.sh serve <id> --port 8095 --no-api-key
+```
+
+It needs an x86-64 CPU with AVX2, an Intel Arc GPU with Intel's compute runtime (Level Zero), glibc 2.38 or later
+and Python 3.10 or later. [INSTALL.md](INSTALL.md) has the requirements by distribution, several GPUs, and what is
+known not to work.
 
 ## Where XeMaya comes from
 
@@ -45,7 +64,7 @@ the correctness oracle in tests; it is not XeMaya's backend.
 | --- | --- | --- |
 | **Qwen3.8-Flash-Next** | Inherited XeStrata path; `qwen4exp` GGUF architecture | Benchmarked on B70 + B65; tools, reasoning and drafting advertised by the catalog. Direct-tier changes made later still need a fresh GPU check. |
 | **GLM-5.3-Flash** | `glm5-next`; setup lists Maya-S v2 / S24 / XS / M / L | Maya-S v2 checked on B70 + B65 + B60; 126/128 forced tokens on the chat-agent reference. A seven-turn tool session ran through the server. This is not validation of every listed quantisation. |
-| **DeepSeek-V4.1-Flash** | `deepseek41`; compressed attention, Engram, chunked prefill and XMX attention | Coder GSQ-RCO IQ2_XXS: 16/16 forced tokens on both saved references on three GPUs. Full 384-expert file previously generated on two GPUs, without reference comparison. DeepSeek tool-call format, qualified thinking and drafting are absent from the catalog. |
+| **DeepSeek-V4.1-Flash** | `deepseek41`; compressed attention, Engram, chunked prefill and XMX attention | Coder GSQ-RCO IQ2_XXS: 16/16 forced tokens on both saved references on three GPUs. Full 384-expert file previously generated on two GPUs, without reference comparison. The server reads the model's DSML tool calls (checked against a fake engine and golden prompts, not with the model); qualified thinking and drafting are absent from the catalog. |
 | **MiniMax-M3.1-Flash** | `minimax-m3`; sparse attention and SwiGLU-OAI; Maya-S IQ2_XXS | Experimental: 32/32 forced tokens for a 211-token chat prompt; 28/32 for a 3,832-token prompt. About 2–4 tok/s decode in recorded runs. Tools, vision and DSpark drafting are not implemented/qualified; no end-to-end server qualification. |
 
 These are specific checked files and paths, not a promise that arbitrary GGUFs or all model variants work.
@@ -69,11 +88,12 @@ GLM's earlier llama.cpp SYCL baselines were 68.3 / 13.6 tok/s (stock) and 108.9 
 files, GPU counts or cold/warm states are not interchangeable; no general speed superiority is claimed.
 
 Recorded checks also include host tests, GLM / DeepSeek / MiniMax kernel parity, IQ-format parity,
-and the server suite (930 passed, 23 skipped at the recorded checkpoint). Later source changes have not
+and the server suite (959 passed, 23 skipped on the development host at the release commit's tree; 938 passed,
+44 skipped in a clean Ubuntu 24.04 container). Later source changes have not
 all been rerun across every model, build mode or OS. Windows and free-mode qualification for the new
 MiniMax path remain unverified.
 
-### Since the audit (2026-11-10, no GPU used)
+### Experimental, outside this release's scope (2026-11-10, no GPU used)
 
 - **Hybrid segment:** a model's last blocks can run in a segment worker on another machine
   (`--segment-last` / `--segment-serve`). MiniMax-M3.1-Flash split over the loopback on the CPU device
@@ -82,6 +102,7 @@ MiniMax path remain unverified.
   it has never been run on Windows. The first-run procedure is [xemaya/WINDOWS-FIRST-RUN.md](xemaya/WINDOWS-FIRST-RUN.md).
 - **DeepSeek-V4.1 tool calls:** the server reads the model's DSML call block (`serve/dsml.py`, from
   upstream Strata) through both APIs; checked against the fake engine and the golden prompts only.
+- **NVIDIA and AMD GPUs:** XeStrata's paths for them are in the source; XeMaya has not built or run them.
 
 ## Building
 
@@ -112,7 +133,8 @@ ONEAPI_DEVICE_SELECTOR=opencl:cpu XEMAYA_CPU_DEVICE=1 build/minimax_parity
 The inherited setup/packaging workflow still uses the `xestrata` name and intel/llvm toolchain;
 `setup.py` does not adopt the direct CMake `icpx` workflow above. Read the inherited
 [installation guide](docs/XESTRATA.md) and [build guide](docs/BUILD.md) with that distinction in mind.
-These commands were checked against source, not executed on the development GPUs for this audit.
+[`tools/xemaya/release.sh`](tools/xemaya/release.sh) runs this build from a clean export of a commit, runs the
+host tests and the CPU-device parity tests, and packs the release folder with its checksums.
 
 ## Model discovery and serving
 
@@ -133,8 +155,8 @@ Inspect `ready`, `missing`, `state` and `note` before using a result. `ready` ch
 The catalog caps its default context at 32,768 tokens; that default is not a tested context guarantee.
 
 The inherited [`serve/server.py`](serve/server.py) exposes OpenAI- and Anthropic-compatible routes.
-Compatibility and model capabilities vary: GLM has a recorded tool session, DeepSeek lacks its tool-call
-format, and MiniMax's end-to-end serving remains unverified. See the inherited
+Compatibility and model capabilities vary: GLM has a recorded tool session, DeepSeek's tool calls are read
+but were not exercised with the model, and MiniMax's end-to-end serving remains unverified. See the inherited
 [API reference](docs/DETAILS.md#using-it) and the [documentation map](DOCUMENTATION.md).
 
 ## Roadmap

@@ -49,8 +49,8 @@ FAMILIES = {
     "deepseek41": {
         "family": "deepseek-v4.1", "label": "DeepSeek-V4.1", "state": "verified", "tools": False, "reasoning": False,
         "vision": False, "draft": False,
-        "note": "Checked against llama.cpp on three Arc cards (16 of 16 on both references). The server has no "
-                "DeepSeek tool-call format yet, and thinking is not qualified.",
+        "note": "Checked against llama.cpp on three Arc cards (16 of 16 on both references). The server reads the "
+                "model's DSML tool calls, checked without a model only; thinking is not qualified.",
         "args": ["--layer-split", "auto", "--spec", "0"]},
     "qwen4exp": {
         "family": "qwen3.8", "label": "Qwen3.8", "state": "verified", "tools": True, "reasoning": True,

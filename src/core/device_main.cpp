@@ -61,7 +61,7 @@ static std::string human(uint64_t b) {
 
 int main(int argc, char** argv) {
     bool selftest = false, list = false;
-    const char* version = "XeStrata " STRATA_VERSION " (backend " STRATA_BACKEND
+    const char* version = "XeMaya " XEMAYA_VERSION ", XeStrata " STRATA_VERSION " (backend " STRATA_BACKEND
         ", upstream Strata " STRATA_UPSTREAM_VERSION ", " STRATA_UPSTREAM_COMMIT ")";
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--selftest") == 0) selftest = true;

@@ -2294,7 +2294,7 @@ int main(int argc, char** argv) {
     // touched (upstream b7dd070d)
     for (int i = 1; i < argc && i < 3; ++i) {
         if (std::strcmp(argv[i], "--version") == 0 || std::strcmp(argv[i], "-V") == 0) {
-            std::printf("strata %s\n", STRATA_VERSION);
+            std::printf("strata %s\nXeMaya %s\n", STRATA_VERSION, XEMAYA_VERSION);   // the first line is upstream's form
             return 0;
         }
     }
