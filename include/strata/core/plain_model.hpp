@@ -159,7 +159,7 @@ public:
     const ModelSpec& spec() const { return spec_; }
     int64_t vocab() const { return n_vocab_; }
     /// The model carries a recurrent state (GDN layers): a sequence can be extended, not cut back to a prefix.
-    bool recurrent() const { return !gdn_state_.empty(); }
+    bool recurrent() const { return !gdn_state_.empty() || ds_; }
     int64_t max_cells() const { return opt_.max_cells; }
     /// The prompt's chunk (0: the prompt runs in windows; GLM-5.3-Flash's for now, whatever the options asked).
     int64_t prompt_chunk() const { return opt_.prompt_chunk; }
@@ -607,6 +607,64 @@ private:
     float* g_mla_scratch_ = nullptr;      ///< XeMaya: glm5_mla_attn_tiled's split partials (decode windows)
     int64_t g_mla_scratch_floats_ = 0;
     float *g_ffg_ = nullptr, *g_ffu_ = nullptr;
+    // XeMaya: DeepSeek-V4.1-Flash (deepseek41), plain_ds41.cpp
+    struct StatePart;
+    struct DBlock {
+        int64_t ratio = 0, kv_src = -1, topk_src = -1;   ///< the spec's, for this layer
+        int64_t eng = -1;                                ///< its Engram module, or -1
+        const float *hc_attn_fn = nullptr, *hc_ffn_fn = nullptr;   // F32 [4 n_embd, 24]
+        const float *hc_attn_base = nullptr, *hc_attn_scale = nullptr, *hc_ffn_base = nullptr, *hc_ffn_scale = nullptr;
+        const float *attn_norm = nullptr, *ffn_norm = nullptr;
+        W q_a, q_b, kv, o_a, o_b;                        ///< o_a: the groups' matrices one after another
+        const float *q_a_norm = nullptr, *kv_norm = nullptr, *sinks = nullptr;
+        // a KV-source layer's compressor and index key, a top-k source layer's indexer (BF16 in the files, widened)
+        const float *comp_kv = nullptr, *comp_gate = nullptr, *comp_norm = nullptr, *idx_k = nullptr,
+                    *idx_k_norm = nullptr, *idx_q_b = nullptr, *idx_proj = nullptr;
+        W eng_kv;
+        const float* eng_gate = nullptr;
+        W ffn_gate, ffn_up, ffn_down;                    ///< the shared expert
+        const float *router = nullptr, *router_b = nullptr;
+        float clamp = 0.0f;
+    };
+    bool ds_ = false;
+    std::vector<DBlock> dblocks_;
+    bool load_ds41(std::string& err);
+    bool load_dblock(const GgufModel& m, int64_t l, DBlock& b, std::string& err);
+    bool reset_ds41(std::string& err);
+    /// stage() for DeepSeek-V4.1: the embeddings, the positions' records (d_meta_'s layout), the Engram rows
+    bool stage_ds41(const int32_t* tokens, int T, int64_t pos, std::string& err, bool emb);
+    bool record_window_ds41(int T, strata::gpu::Stream cs, std::string& err);
+    void record_dattn(const DBlock& b, int64_t l, int T, strata::gpu::Stream cs);
+    bool record_dmoe(const DBlock& b, int64_t ml, int T, uint32_t& ring, std::vector<strata::gpu::Graph*>& segs,
+                     strata::gpu::Stream cs, std::string& err);
+    /// The state a sequence carries beyond the rows of its tokens (the rings, the open blocks): save_recurrent's
+    std::vector<StatePart> ds41_recurrent_parts() const;
+    // per-sequence state (device), per layer of this stage: the raw KV ring; a KV-source layer's open block
+    // (ds41_compress_stream's state) and compressed cache
+    std::vector<float*> d_raw_, d_cstate_, d_comp_;
+    std::vector<int64_t> d_rows_;                 ///< a KV-source layer's compressed rows (the cache's capacity)
+    int64_t d_ring_ = 0, d_score_stride_ = 0, d_blk_stride_ = 0;
+    std::vector<int64_t> d_ratios_;               ///< the distinct ratios above 0, at most kDsRatios
+    static constexpr int kDsRatios = 4, kDsMeta = 2 + 2 * kDsRatios;
+    /// mapped, max_t ints each: the positions; per distinct ratio the visible compressed rows and the block's first
+    /// position; the candidate blocks visible.  d_meta_ is its device copy
+    int32_t *h_dmeta_ = nullptr, *m_dmeta_ = nullptr, *d_meta_ = nullptr;
+    int32_t *h_dtok_ = nullptr, *m_dtok_ = nullptr;   ///< mapped: the sequence's tokens (Engram's n-grams)
+    float *h_deng_ = nullptr, *m_deng_ = nullptr;     ///< mapped: per Engram layer of this stage, max_t rows of table rows
+    float *h_done_ = nullptr, *m_done_ = nullptr;     ///< mapped: (1, 0, 0, 0) a token: layer 0 reads stream 0
+    std::vector<int64_t> d_eng_local_;                ///< the stage's Engram layers
+    int d_eng_type_ = -1;
+    const uint8_t* d_eng_tab_ = nullptr;              ///< per_layer_token_embd in the mapping
+    size_t d_eng_row_ = 0;
+    uint64_t d_eng_rows_n_ = 0;
+    // the window's buffers (device)
+    float *d_pre_[3] = {nullptr, nullptr, nullptr};
+    float *d_qa_ = nullptr, *d_qr_ = nullptr, *d_q_ = nullptr, *d_kvr_ = nullptr, *d_kv_ = nullptr, *d_cv_ = nullptr,
+          *d_cg_ = nullptr, *d_lat_ = nullptr, *d_ikr_ = nullptr, *d_ik_ = nullptr, *d_iq_ = nullptr, *d_iw_ = nullptr,
+          *d_scores_ = nullptr, *d_bmax_ = nullptr, *d_att_ = nullptr, *d_attT_ = nullptr, *d_oaT_ = nullptr,
+          *d_oa_ = nullptr, *d_engr_ = nullptr, *d_engkv_ = nullptr;
+    int32_t *d_ids_ = nullptr, *d_cnt_ = nullptr, *d_cand_ = nullptr, *d_ncand_ = nullptr;
+
     /// The recurrent states' sizes in bytes (a GDN's or a KDA's; its convolution history), for reset and spec_step.
     size_t state_bytes_ = 0, conv_bytes_ = 0;
 

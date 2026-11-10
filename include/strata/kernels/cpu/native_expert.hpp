@@ -27,7 +27,7 @@ struct alignas(64) NativeAct {
 /// as Q8_0: 30 x 34, as BF16 1920; GLM-5.3-Flash's 2048 as Q8_0: 64 x 34, as Q8_K 8 x 292).
 inline constexpr size_t kNativeHBytes = 4096;
 /// The widest expert intermediate a native layer may have (GLM-5.3-Flash: 2048); the pool's row buffers are this wide.
-inline constexpr int64_t kNativeMaxFF = 2048;
+inline constexpr int64_t kNativeMaxFF = 4096;   // XeMaya: DeepSeek-V4.1-Flash's experts are 2304 wide (was 2048)
 
 /// One layer's native expert geometry.
 struct NativeFmt {

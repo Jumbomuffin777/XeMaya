@@ -2354,7 +2354,7 @@ bool native_expert_supported(int gu_type, int d_type, int64_t n_embd, int64_t n_
     const bool d = d_type == 20 || d_type == 23 || d_type == 42 || d_type == 6 || d_type == 7 || d_type == 8 ||
                    d_type == 2 || d_type == 3 || d_type == 14 || d_type == 10 || d_type == 11 || d_type == 12 ||
                    d_type == 13 || d_type == 16 || d_type == 17 || d_type == 18 || d_type == 21 || d_type == 22 ||
-                   is_tq(d_type);
+                   d_type == 29 || is_tq(d_type);
     const auto qk = [](int t) {
         return t == 20 || t == 6 || t == 7 || t == 8 || t == 2 || t == 3 ? 32 : t == 42 ? 64 : is_tq(t) ? 128 : 256;
     };
@@ -2530,6 +2530,8 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
         case 18: e = launch_native_down<18, down_lpr<18>()>(q, cg, grp_ptr, grp_start, n_groups, ent_dst, hq, L, out); break;
         case 21: e = launch_native_down<21, down_lpr<21>()>(q, cg, grp_ptr, grp_start, n_groups, ent_dst, hq, L, out); break;
         case 22: e = launch_native_down<22, down_lpr<22>()>(q, cg, grp_ptr, grp_start, n_groups, ent_dst, hq, L, out); break;
+        // XeMaya: IQ1_M down rows (DeepSeek-V4.1-Flash GSQ-RCO IQ2_XXS keeps most layers' experts in IQ1_M)
+        case 29: e = launch_native_down<29, down_lpr<29>()>(q, cg, grp_ptr, grp_start, n_groups, ent_dst, hq, L, out); break;
         // the trellis types (Gyro)
         case 144: e = launch_native_down<144, down_lpr<144>()>(q, cg, grp_ptr, grp_start, n_groups, ent_dst, hq, L, out); break;
         case 145: e = launch_native_down<145, down_lpr<145>()>(q, cg, grp_ptr, grp_start, n_groups, ent_dst, hq, L, out); break;

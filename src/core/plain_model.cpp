@@ -420,6 +420,7 @@ bool PlainModel::load_stage(const PlainOptions& opt, PlainModel* root, int64_t l
 }
 
 bool PlainModel::load_arch(std::string& err) {
+    if (spec_.arch == ModelArch::DeepSeek41) return load_ds41(err);   // XeMaya
     return spec_.arch == ModelArch::Glm5Next ? load_glm5(err) : load_qwen(err);
 }
 
@@ -1836,6 +1837,15 @@ std::vector<PlainModel::StatePart> PlainModel::state_parts(int64_t tokens) const
         parts.push_back({gdn_state_[g], state_bytes_});
         parts.push_back({gdn_conv_[g], conv_bytes_});
     }
+    if (ds_) {   // XeMaya: the rings and open blocks, a KV-source layer's compressed rows of the tokens, the tokens
+        for (const StatePart& p : ds41_recurrent_parts()) parts.push_back(p);
+        const int64_t D = s.key_length, ID = s.idx_key_length;
+        for (int64_t l = lb_; l < le_; ++l)
+            if (d_comp_[(size_t) l] != nullptr)
+                parts.push_back({d_comp_[(size_t) l], (size_t) (std::min(d_rows_[(size_t) l], tokens / dblocks_[(size_t) l].ratio) * (D + ID)) * 4});
+        parts.push_back({m_dtok_, (size_t) tokens * 4});
+        return parts;
+    }
     if (glm_) {   // per DSA block: its latent and indexer rows a cell, the pools that the cells close
         const int64_t KVR = s.kv_lora_rank, ID = s.idx_key_length;
         const int64_t pools = std::min<int64_t>(g_max_blocks_, tokens / s.idx_kpool + 1);
@@ -1940,10 +1950,14 @@ bool PlainModel::save_recurrent(int64_t tokens, Snapshot& snap, std::string& err
             err = std::string("plain model: ") + strata::gpu::last_error();
             return false;
         }
+        std::vector<StatePart> rec = st->ds41_recurrent_parts();   // XeMaya: DeepSeek-V4.1's rings and open blocks
         for (size_t g = 0; g < st->gdn_state_.size(); ++g) {
             if (st->gdn_state_[g] == nullptr) continue;
-            const StatePart parts[2] = {{st->gdn_state_[g], st->state_bytes_}, {st->gdn_conv_[g], st->conv_bytes_}};
-            for (const StatePart& p : parts) {
+            rec.push_back({st->gdn_state_[g], st->state_bytes_});
+            rec.push_back({st->gdn_conv_[g], st->conv_bytes_});
+        }
+        {
+            for (const StatePart& p : rec) {
                 if (i >= snap.parts.size()) snap.parts.emplace_back(p.bytes);
                 else if (snap.parts[i].size() != p.bytes) snap.parts[i].resize(p.bytes);
                 if (p.bytes > 0 && !strata::gpu::copy(snap.parts[i].data(), p.dev, p.bytes)) {
@@ -1967,10 +1981,14 @@ bool PlainModel::restore_recurrent(const Snapshot& snap, std::string& err) {
             err = std::string("plain model: ") + strata::gpu::last_error();
             return false;
         }
+        std::vector<StatePart> rec = st->ds41_recurrent_parts();   // XeMaya: DeepSeek-V4.1's rings and open blocks
         for (size_t g = 0; g < st->gdn_state_.size(); ++g) {
             if (st->gdn_state_[g] == nullptr) continue;
-            const StatePart parts[2] = {{st->gdn_state_[g], st->state_bytes_}, {st->gdn_conv_[g], st->conv_bytes_}};
-            for (const StatePart& p : parts) {
+            rec.push_back({st->gdn_state_[g], st->state_bytes_});
+            rec.push_back({st->gdn_conv_[g], st->conv_bytes_});
+        }
+        {
+            for (const StatePart& p : rec) {
                 if (i >= snap.parts.size() || snap.parts[i].size() != p.bytes) {
                     err = "plain model: a recurrent state of another shape";
                     return false;
@@ -1998,6 +2016,7 @@ bool PlainModel::reset(std::string& err) {
         const OnDevice on(st->dev_);
         if (!st->reset(err)) return false;
     }
+    if (ds_) return reset_ds41(err);
     if (glm_) return reset_glm5(err);
     const ModelSpec& s = spec_;
     bool ok = true;
@@ -2185,6 +2204,7 @@ bool PlainModel::record_block(const Block& b, int64_t ml, int T, uint32_t& ring,
 }
 
 bool PlainModel::record_window(int T, strata::gpu::Stream cs, std::string& err) {
+    if (ds_) return record_window_ds41(T, cs, err);
     if (glm_) return record_window_glm5(T, cs, err);
     const ModelSpec& s = spec_;
     const int64_t N = s.n_embd, NH = s.n_head;
@@ -2343,6 +2363,7 @@ bool PlainModel::run_window(int T, bool mtp, std::string& err) {
 
 // The window's inputs in the mapped staging: the tokens' embedding rows, their step records and rotary positions.
 bool PlainModel::stage(const int32_t* tokens, int T, int64_t pos, std::string& err, bool emb) {
+    if (ds_) return stage_ds41(tokens, T, pos, err, emb);
     const ModelSpec& s = spec_;
     const int64_t N = s.n_embd, NH = s.n_head;
     const k::QsaShapes qs = attn_shapes(s, nkv_);

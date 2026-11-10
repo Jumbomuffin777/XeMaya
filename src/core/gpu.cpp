@@ -418,6 +418,18 @@ bool memset_async(void* dst, int value, size_t bytes, Stream s) {
 bool mem_info(size_t* free_bytes, size_t* total_bytes) {
     try {
         const auto& d = rt().device();
+        if (d.is_cpu()) {   // XeMaya: the OpenCL CPU device (XEMAYA_CPU_DEVICE=1, development only): a stated budget
+            const char* v = std::getenv("XEMAYA_CPU_DEVICE_MIB");
+            const uint64_t total = (uint64_t) (v != nullptr && std::atoll(v) > 0 ? std::atoll(v) : 6144) << 20;
+            size_t held = 0;
+            {
+                std::lock_guard<std::mutex> lock(g_live_mu);
+                if (auto it = g_live_on.find(rt().ordinal()); it != g_live_on.end()) held = it->second;
+            }
+            if (free_bytes) *free_bytes = (size_t) (total > held ? total - held : 0);
+            if (total_bytes) *total_bytes = (size_t) total;
+            return true;
+        }
         if (!d.has(sycl::aspect::ext_intel_free_memory)) {
             g_error = "mem_info: the device does not report free memory (set ZES_ENABLE_SYSMAN=1)";
             return false;
