@@ -123,6 +123,8 @@ NVMe during the prompt.
 
 ## Handoff: where the work stands (2026-11-10 01:00 UTC, read this first)
 
+- **2026-11-10 03:54 UTC: DeepSeek-V4.1 runs natively on the B70 + B65** (window 5, the section below this handoff).
+  Steps 1 and 2 of the list here are done; step 3 (the chunked prompt path) is next.
 - **No GPU window is open.** Window 4 was closed at 22:50 UTC (production Qwen healthy, lease `qwen38-strata-iq3s`).
   The Sonnet supervisor, Hermes and Pi agents are PARKED by the owner (HOLD at the top of `/home/dan/supervisor/CLAUDE.md`):
   do not run `supervisor/start.sh`. A new window needs the owner's word; then B70 + B65 only, every job under
@@ -141,6 +143,50 @@ NVMe during the prompt.
   The lever found: `STRATA_PREFILL_MMQ=0` (+7%); making it the measured default for 8K chunks is open work.
 - Tools of this window: `tools/xemaya/{qwen_bench.py, make_qwen_prompts.py, window4_qwen.sh, qwen_report.py,
   ref_ds41.sh}`; raw results `xemaya/benchmarks/2026-11-09-window4-qwen/` and `/DATA/Projects/xemaya/logs/window4/`.
+
+## GPU window 5: DeepSeek-V4.1-Flash's first runs on Arc (2026-11-10 03:35-03:54 UTC)
+
+Owner-authorized (60 minutes, deadline guard at 04:26); B70 + B65 only (`level_zero:0,1`), every job under the lease and
+`safety_guard.sh`; no kernel message (NIC watchdog, engine reset, AER, OOM) during the window. Closed with
+`xemaya-window-end.sh` at 03:54 (Qwen loaded after 54 s, lease `qwen38-strata-iq3s`); the agents stayed parked. Logs:
+`/DATA/Projects/xemaya/logs/window5/`. Engine: `build-engine` (icpx 2026.2), `--layer-split auto` (B70 blocks 0-19, B65
+20-39; 20 MoE layers each, 172 and 156 slots a layer of 192), `--mmap-experts`, `--spec 0`, greedy.
+
+**Correctness** (Coder GSQ-RCO IQ2_XXS, forced along the llama.cpp v0.8.0 CPU references):
+
+| Check | Result |
+|---|---|
+| `ds41_parity`, `glm5_parity` on the B70 and the B65 | PASS |
+| 576-token prompt, 16 steps | top-1 equal at **16 of 16**, median \|d logprob\| 0.015, max 0.076 |
+| 24-token prompt, 16 steps | top-1 equal at **15 of 16**: step 3 flips at a reference margin of 0.211 (':' -0.962 in the reference, -1.136 here), which the script's near-tie rule does not excuse; median 0.002, max 0.175. The OpenCL CPU device took the reference's token there (-1.096) |
+| GLM-5.3 Maya-S v2 forced along chat-agent (the checkpoint loop was regrouped for DeepSeek) | 126 of 128, median 0.012, max 0.395: window 3's count; no regression seen |
+| 2,876-token prompt (coder-mid's text five times) + 64 tokens | runs to the end, no fault; not compared with a reference |
+| The full 384-expert model (GSQ-RCO IQ2_XXS), 24-token prompt + 48 tokens | loads (9.1 s) and generates; **not compared with a reference** (there is none for this file yet) |
+
+**Speed** (Coder; the prompt runs in decode windows of 8 tokens, there is no chunked path yet):
+
+| Run | Prefill tok/s | TTFT s | Decode tok/s | Experts hit in VRAM |
+|---|---|---|---|---|
+| 576-token prompt, first after a load (cold tier, the files read from the drive: 234 GB) | 10.8 | 53.4 | 14.7 | 81.3% |
+| 576 tokens of other order, same process (warm) | **48.5-48.9** | 11.8 | **16.3** | 99.0% |
+| 24-token prompt, warm | 21.1 | 1.14 | 15.8 | 97.0% |
+| 2,876-token prompt, one process from cold | 26.3 (whole prompt) | 109 | 15.9 | 95.2% |
+| Full 384-expert model, 24 tokens, cold (585 of 6,540 slots filled) | 2.2 | 11.1 | 3.0 | 28.0% |
+
+VRAM while loaded: B70 31.6 GB, B65 31.5 GB. Load 6 s (Coder). Decode does not slow with context (15.9 tok/s at 2.9K).
+
+**Where the time goes** (`STRATA_WINDOW_TIMES`; a token or window is 40 MoE rings):
+
+- Decode, one token a window: the GPU reaches a ring in about 0.76 ms; a warm token takes 61 ms, so about half of it is
+  the host's answer and the round trip of each of the 40 rings, as GLM's 42.
+- Prompt windows of 8: the GPU's part is 1.5-3.9 ms a ring (rising with the context), 60-150 ms a window, which alone
+  caps the windowed prompt near 50 tok/s. **The chunked prompt path is the prefill lever**, not tuning the windows.
+- Cold: the first prompt after a load reads 234 GB from the model's files in 53 s (the load drops them from the page
+  cache; the tier's slots are filled a window at a time, 5,592 swaps), with the host answering a ring in 22 ms.
+  Filling the tier at load from a saved profile (`--profile`, as Qwen's) is the cold-TTFT lever.
+
+**Next:** the chunked prompt path for DeepSeek (plain_prompt_ds41.cpp, after plain_prompt_glm5.cpp); a tier profile at
+load; a llama.cpp reference for the full model and longer prompts; then decode (fewer host round trips).
 
 ## GPU window 4: Qwen3.8 Flash-Next on three engines, DeepSeek-V4.1 (2026-11-09 21:28-22:50 UTC)
 

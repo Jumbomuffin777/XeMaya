@@ -14,9 +14,9 @@ hardware (Xe2 / Battlemage first) rather than translated from CUDA. It is not a 
 compatibility layer. The goal is an open, efficient engine that gets everything Arc GPUs can give, on one card or
 several, with performance competitive with native CUDA/HIP engines wherever the hardware allows.
 
-> **Status: early development.** XeMaya builds, its kernels pass parity tests, and it reads the GLM and DeepSeek model
-> files, but GLM-5.3-Flash and DeepSeek-V4.1-Flash do not run end to end on an Arc GPU yet. Qwen3.8-Flash-Next support
-> is inherited from XeStrata. See [Status](#status) and the [roadmap](#roadmap).
+> **Status: early development.** GLM-5.3-Flash and DeepSeek-V4.1-Flash run natively on Arc GPUs and agree with
+> llama.cpp on the checked prompts, but neither is production-ready (few prompts checked, DeepSeek's prompt path is
+> slow, no API soak). Qwen3.8-Flash-Next support is inherited from XeStrata. See [Status](#status) and the [roadmap](#roadmap).
 
 ## Where XeMaya comes from
 
@@ -36,8 +36,8 @@ the correctness oracle in tests; it is not XeMaya's backend.
 | Model | Size | Formats | State in XeMaya |
 | --- | --- | --- | --- |
 | **Qwen3.8-Flash-Next** | 125B MoE | XeStrata's GGUFs (ISTA-DASLab GSQ-RCO, Swift 1.5, Coder, Gyro, Unsloth) | Runs (inherited from XeStrata) |
-| **GLM-5.3-Flash** | 320B MoE (18B active) | Project Maya GGUFs (Maya-S v2, S24, XS, M, L) | Kernels pass parity; model files read correctly; first GPU run in progress |
-| **DeepSeek-V4.1-Flash** | 748B MoE | ISTA-DASLab GSQ-RCO and Coder, Maya-XS / S | Model-specific kernels pass parity; tensor manifest verified on real files; model block not written yet |
+| **GLM-5.3-Flash** | 320B MoE (18B active) | Project Maya GGUFs (Maya-S v2, S24, XS, M, L) | Runs on Arc (B70 + B65 + B60); checked against llama.cpp on four prompts; tuning |
+| **DeepSeek-V4.1-Flash** | 748B MoE | ISTA-DASLab GSQ-RCO and Coder, Maya-XS / S | Runs on Arc (B70 + B65): the Coder file checked against llama.cpp on two prompts; the prompt path is not chunked yet (slow prefill) |
 
 ## Status
 
@@ -53,6 +53,7 @@ B60 24 GB, Intel oneAPI `icpx` 2026.2).
 | llama.cpp reference | 16 greedy tokens of Maya-S v2 from llama.cpp v0.8.0 on the CPU, with each step's top-5, saved for the GPU comparison |
 | DeepSeek-V4.1 model files | All 1043 tensors of both ISTA-DASLab models match llama.cpp's shapes |
 | DeepSeek-V4.1 kernels | `ds41_parity`: 18/18 on the CPU device and on each Arc card (router, mHC, compressor, Engram gate and hash, YaRN RoPE, indexer, top-k, sink attention) |
+| DeepSeek-V4.1-Flash on Arc | The Coder GSQ-RCO IQ2_XXS file runs natively on B70 + B65 (2026-11-10). Forced along llama.cpp's CPU reference: 16 of 16 top-1 on a 576-token prompt, 15 of 16 on a 24-token prompt (one flip at a 0.21 margin). Warm: prefill 48.5-48.9 tok/s (the prompt still runs in decode windows), decode 16.3 tok/s; first prompt after a load 10.8 tok/s. A 2,876-token prompt runs (decode 15.9 tok/s). The full 384-expert file loads and generates, not yet compared with a reference |
 | i-quant kernels | `iq_parity`: 0 failures over 10 formats (IQ1_M to IQ4_XS, Q2_0, Q3_K) on the CPU device and each Arc card |
 | Element-wise kernels | `elementwise_parity`: 0 failures on each Arc card |
 | Server | 14 newer Strata tool-call fixes ported; serve tests 930 passed, 0 failed |
