@@ -1,7 +1,36 @@
 # XeMaya status
 
-Updated 2026-11-10 12:30 UTC (MiniMax-M3.1-Flash runs on the three Arc cards; the handoff is the next section).
+Updated 2026-11-10 (the hybrid segment, checked on the CPU device; then the handoff of 12:30 UTC: MiniMax-M3.1-Flash on the three Arc cards).
 https://github.com/Jumbomuffin777/XeMaya. Every item below was run on Zability unless marked otherwise.
+
+## The hybrid segment and the front-end hooks (2026-11-10, after the handoff below; no GPU was used)
+
+Commit `9d091a92b`. A model's last blocks can run in a **segment worker** on another machine (the owner's Windows PC
+with an RTX 4090 is the target), the boundary's rows over one TCP link. `docs` for the whole feature, with the
+front-end's side, the setup and the remaining work in order: FrontierUI's `docs/HYBRID.md`
+(branch `fable/visual-parity`).
+
+- Engine: `--segment-last K --remote-segment HOST:PORT` (this engine: blocks before K), `--segment-first K
+  --segment-serve [HOST:]PORT` (the worker: the rest and the head), `--segment-wire f32|f16`, the secret in
+  `XEMAYA_SEGMENT_TOKEN`. Code: `include/strata/hybrid/`, `src/hybrid/`, `src/platform/net.cpp`,
+  `src/core/plain_segment.cpp`, and in PlainModel the segment's range, `forward_from`, `prompt_open/step/close`, the
+  states' tickets. A segment's experts are read in place (`--mmap-experts` is forced).
+- Server: a config's `hybrid_file` (a front-end writes it) becomes those arguments at the engine's start;
+  `/v1/status` has `stages` (each stage's blocks, GPU, memory) and `hybrid`. `catalog.py --units` writes the systemd
+  units and each model's `unit`, `port`, `upstream`, `blocks`, `embedding_length`, `hybrid_file` (the stages and the
+  units were in the tree before this session and went in with the same commit).
+- **Checked on the OpenCL CPU device** (`tools/xemaya/segment_cpu_check.sh`, logs in `logs/seg-cpu/`): MiniMax-M3.1-
+  Flash Maya-S, blocks 0-44 in one engine, 45-59 in a worker over the loopback, chat template, 211-token prompt in
+  chunks, 32 forced steps: **32 of 32 against the llama.cpp reference**, median |d logprob| 0.001, max 0.178 (the
+  whole model in one engine: 32 of 32, 0.001, 0.120). `segment_link_test` PASS (also ASan/UBSan). serve 934 passed.
+- **Unverified:** any GPU, two machines, the Windows build (two `_WIN32` branches never compiled), NVIDIA's kernels on
+  these models, GLM-5.3 and DeepSeek-V4.1 over the link (DeepSeek's prompts go through the windows there), a state
+  saved and restored over the link on a real model, halves on a real model, the free mode.
+- **Not built:** drafts (MTP), a grammar mask or logit bias, pictures with a remote segment; a RAM copy of a segment's
+  experts alone (`ArenaExpertSource` loads every layer: restricting it to a segment's layers is the next engine
+  step, it decides the worker's speed when its blocks exceed its VRAM); DeepSeek's cut carry in a prompt chunk;
+  the link's per-request numbers in `/v1/status` (they are in the engine's stderr).
+- The GPU stop of the handoff below still holds: nothing here lifts it.
 
 ## Handoff: where the work stands (2026-11-10 12:30 UTC, read this first)
 
