@@ -12,6 +12,8 @@
 // cb() names; tools/xemaya/compare_evalcb.py compares them with llama-eval-callback).  --dense: every block attends
 // every cell (no block selection).  --ggml-acts: each product's activations rounded to int8 as ggml's CPU backend
 // rounds them for a quantized weight (ggml_acts below): llama.cpp's CPU answers, not the model's in exact floats.
+// --acts32 PASSES: every quantized product's activations as int8 with a scale a block of 32, the remainder rounded
+// again PASSES - 1 times: what an engine's int8 activations cost against the floats.
 //
 // The arithmetic follows llama.cpp's src/models/minimax-m3.cpp (the graph and its sparse attention),
 // src/llama-graph.cpp (build_moe_ffn, build_ffn's swiglu-oai), src/llama-kv-cache-msa.cpp (the positions a token
@@ -86,17 +88,41 @@ struct Mat {
 };
 
 bool g_ggml_acts = false;   // --ggml-acts
+int g_acts32 = 0;           // --acts32 PASSES
+// --twice MASK (with --acts32 1): the classes of products that take two passes: 1 from a block's normed rows (q, k,
+// v, the indexer, a dense FFN's or the shared expert's gate and up), 2 the attention's output, 4 a dense FFN's or
+// the shared expert's down, 8 the experts' gate and up, 16 the experts' down, 32 the head
+int g_twice = 0;
 
 /// --ggml-acts: x as ggml's CPU backend hands it to a product with a weight of `type` (ggml_compute_forward_mul_mat
 /// converts the activations to the weight's vec_dot_type): int8 with a scale a block of 32 (Q8_0, for Q8_0 weights:
 /// quantize_row_q8_0, the scale kept in FP16) or of 256 (Q8_K, for the K- and I-quants: quantize_row_q8_K); F32, F16
 /// and BF16 weights take the floats.  The values back as floats: the integer dot products are exact in float here.
-void ggml_acts(uint32_t type, const float* x, float* y, int64_t n) {
+void ggml_acts(uint32_t type, const float* x, float* y, int64_t n, int cls = 0) {
     const bool q80 = type == GGML_TYPE_Q8_0;
     const bool q8k = type == GGML_TYPE_Q2_K || type == GGML_TYPE_Q3_K || type == GGML_TYPE_Q4_K || type == GGML_TYPE_Q5_K ||
                      type == GGML_TYPE_Q6_K || type == GGML_TYPE_IQ2_XXS || type == GGML_TYPE_IQ2_XS ||
                      type == GGML_TYPE_IQ2_S || type == GGML_TYPE_IQ3_XXS || type == GGML_TYPE_IQ3_S ||
                      type == GGML_TYPE_IQ1_S || type == GGML_TYPE_IQ1_M || type == GGML_TYPE_IQ4_XS;
+    if (g_acts32 > 0 && (q80 || q8k)) {   // --acts32 PASSES: int8 a block of 32 for every quantized weight (the
+        // engine's q8_1 rows), the rounding's remainder rounded again PASSES - 1 times (2: about 14 bits)
+        std::vector<float> r(x, x + n);
+        std::fill(y, y + n, 0.0f);
+        const int passes = g_acts32 == 1 && (g_twice & cls) != 0 ? 2 : g_acts32;
+        for (int pass = 0; pass < passes; ++pass)
+            for (int64_t b = 0; b < n; b += 32) {
+                const int64_t e = std::min(n, b + 32);
+                float amax = 0;
+                for (int64_t i = b; i < e; ++i) amax = std::max(amax, std::fabs(r[(size_t) i]));
+                const float d = amax / 127.0f, id = d != 0.0f ? 1.0f / d : 0.0f;
+                for (int64_t i = b; i < e; ++i) {
+                    const float v = std::nearbyint(r[(size_t) i] * id) * d;
+                    y[i] += v;
+                    r[(size_t) i] -= v;
+                }
+            }
+        return;
+    }
     if (!g_ggml_acts || !(q80 || q8k)) {
         if (y != x) std::memcpy(y, x, (size_t) n * 4);
         return;
@@ -172,12 +198,12 @@ std::vector<float> vec(const GgufModel& m, const std::string& name, int64_t n) {
 }
 
 /// y [T][n_out] = w x, x [T][n_in]
-std::vector<float> mul(const Mat& a, const float* x, int64_t T) {
+std::vector<float> mul(const Mat& a, const float* x, int64_t T, int cls = 1) {
     std::vector<float> y((size_t) (T * a.n_out));
     std::vector<float> xq;
-    if (g_ggml_acts) {
+    if (g_ggml_acts || g_acts32 > 0) {
         xq.resize((size_t) (T * a.n_in));
-        for (int64_t t = 0; t < T; ++t) ggml_acts(a.type, x + t * a.n_in, xq.data() + t * a.n_in, a.n_in);
+        for (int64_t t = 0; t < T; ++t) ggml_acts(a.type, x + t * a.n_in, xq.data() + t * a.n_in, a.n_in, cls);
         x = xq.data();
     }
     parallel_for(a.n_out, [&](int64_t r) {
@@ -321,7 +347,7 @@ struct Model {
             }
         });
         dump("kqv_out", l, o, T);
-        return mul(mat(m, p + "attn_output.weight", NH * HD, N), o.data(), T);
+        return mul(mat(m, p + "attn_output.weight", NH * HD, N), o.data(), T, 2);
     }
 
     /// gate / up, swiglu-oai, down over T rows
@@ -333,7 +359,7 @@ struct Model {
         dump("ffn_up", l, u, T);
         for (size_t i = 0; i < g.size(); ++i) g[i] = swiglu_oai(g[i], u[i]);
         dump("ffn_swiglu_oai", l, g, T);
-        return mul(mat(m, down, F, N), g.data(), T);
+        return mul(mat(m, down, F, N), g.data(), T, 4);
     }
 
     std::vector<float> ffn(int64_t l, const std::vector<float>& cur) {
@@ -381,13 +407,13 @@ struct Model {
             rows_of(m, p + "ffn_down_exps.weight", e * N, N, F, wd.data());
             for (const auto& [t, w] : tk) {
                 std::vector<float> xg((size_t) N), xu((size_t) N);
-                ggml_acts(tg, cur.data() + t * N, xg.data(), N);
-                ggml_acts(tu, cur.data() + t * N, xu.data(), N);
+                ggml_acts(tg, cur.data() + t * N, xg.data(), N, 8);
+                ggml_acts(tu, cur.data() + t * N, xu.data(), N, 8);
                 std::vector<float> h((size_t) F);
                 parallel_for(F, [&](int64_t f) {
                     h[(size_t) f] = swiglu_oai(dot(wg.data() + f * N, xg.data(), N), dot(wu.data() + f * N, xu.data(), N));
                 });
-                ggml_acts(td, h.data(), h.data(), F);
+                ggml_acts(td, h.data(), h.data(), F, 16);
                 const float wt = w;
                 const int64_t tt = t;
                 parallel_for(N, [&](int64_t n) { out[(size_t) (tt * N + n)] += dot(wd.data() + n * F, h.data(), F) * wt; });
@@ -428,7 +454,7 @@ struct Model {
         const int64_t R = T - from;
         std::vector<float> cur(x.begin() + from * N, x.end());
         rms_norm(cur.data(), R, N, vec(m, "output_norm.weight", N).data(), eps);
-        return mul(mat(m, "output.weight", N, n_vocab), cur.data(), R);
+        return mul(mat(m, "output.weight", N, n_vocab), cur.data(), R, 32);
     }
 };
 
@@ -449,6 +475,8 @@ int main(int argc, char** argv) {
             else if (a == "--dense") g_dense = true;
             else if (a == "--layers" && i + 1 < argc) g_layers = std::atoll(argv[++i]);
             else if (a == "--ggml-acts") g_ggml_acts = true;
+            else if (a == "--acts32" && i + 1 < argc) g_acts32 = std::atoi(argv[++i]);
+            else if (a == "--twice" && i + 1 < argc) g_twice = std::atoi(argv[++i]);
             else throw std::runtime_error("unknown argument " + a);
         }
         const GgufModel gm = GgufModel::open(argv[1]);

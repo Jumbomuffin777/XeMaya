@@ -1,7 +1,92 @@
 # XeMaya status
 
-Updated 2026-11-10 01:00 UTC (after GPU window 4: Qwen3.8 benchmarks, the DeepSeek-V4.1 block; the handoff is the next section).
+Updated 2026-11-10 12:30 UTC (MiniMax-M3.1-Flash runs on the three Arc cards; the handoff is the next section).
 https://github.com/Jumbomuffin777/XeMaya. Every item below was run on Zability unless marked otherwise.
+
+## Handoff: where the work stands (2026-11-10 12:30 UTC, read this first)
+
+- **Operations.** Production Qwen (`zability-strata-qwen38.service`) is stopped and masked by the owner: leave it off,
+  do not restore it. The Sonnet supervisor, Hermes and Pi stay parked. GPU work is authorized on B70 + B65 + B60, one
+  job at a time through `tools/xemaya/gpu_job.sh` (the lease, the safety guard, a memory cap, a time limit; it
+  refuses while the production unit is active or the kernel log has a NIC, GPU, AER or OOM message). The B60 is
+  named with `XEMAYA_GPUS=level_zero:0,1,2 XEMAYA_SLOW_LINK_GPUS=1`. No kernel message in any run of this session.
+- **DeepSeek-V4.1** (the section "Three GPUs for DeepSeek-V4.1" below): committed and pushed (`61bd5d654`); both
+  forced references 16 of 16 on B70 + B65 + B60 with the XMX attention, 207-225 tok/s prefill, 19.5-21.7 decode.
+- **MiniMax-M3.1-Flash Maya-S** (the section below): runs natively on the three cards, 32 of 32 on its chat-template
+  reference. Slow so far (about 60 tok/s prefill, 2-4 tok/s decode): 30% of its experts do not fit in VRAM.
+  **Next, in order:**
+  1. the experts outside VRAM: the RAM copy instead of the files (run without `--mmap-experts`; in progress), the
+     B60's spare 3.9 GiB (a tenth layer), a tier profile at load, the missed experts over PCIe in decode;
+  2. `mm_msa_select`'s scores are a work-item a block (FP32): a decode token at 3.8K context went 3.7 -> 2.4 tok/s
+     with the selection on; score on the matrix engines or a work-group a block;
+  3. the prompt profile (`STRATA_PROMPT_PROFILE=1`), then the chunked path's levers as GLM's and DeepSeek's;
+  4. serve: MiniMax's chat template and tool calls (`serve/`), the vision encoder and the DSpark drafter
+     (`/mnt/ai/models/minimax-m3.1/{vision,dspark}`, safetensors: not started; Project Maya's `src/mm3/mm3_vision.*`
+     and `mm3_dspark.hpp` are the references);
+  5. GLM-5.3 and Qwen3.8 forced checks again (`canon_gu_rows` now applies the experts' SwiGLU limit; the direct
+     tiers are shared code): not rerun in this session.
+
+## MiniMax-M3.1-Flash Maya-S IQ2_XXS on the Arc cards (2026-11-10)
+
+Model: `/mnt/ai/models/minimax-m3.1/Maya-S/` (3 shards, 114 GB; 60 blocks, 3 leading dense, 57 x 128 experts of
+14.3 MiB, 4 used; 64 heads of 128 on 4 K/V heads; the sparse attention: blocks of 128 positions, 16 taken, 1 local).
+The model runs in PlainModel's generic block (`mm_`): qwen3moe's attention, `glm5_router_sigmoid` with the selection
+bias, swiglu-oai (alpha 1.702, limit 7) in the dense FFN, the shared expert and the experts, and the sparse attention
+of `include/strata/kernels/minimax.hpp` (`mm_msa_attn_xmx` on the matrix engines).
+
+**What decides correctness here.** llama.cpp's CPU backend rounds a quantized product's activations to int8 a block of
+256 (Q8_K); the engine rounds them a block of 32; `src/reference/mm_host.cpp` keeps floats. On the model's chat
+template the three agree. On raw text without the template's first tokens (the first two references, `short` and
+`mid`) the first token's row amplifies every rounding (a 2e-4 difference in a product's input moved its output by
+6e-3) and no two implementations agree: those references do not decide anything.
+
+| Check | Result |
+|---|---|
+| `minimax_parity` (selection, attention whole and in 16 parts, swiglu-oai) | PASS on the OpenCL CPU device and on B70, B65, B60 (the matrix-engine attention within 1.4e-6 of a double-precision reference) |
+| `mm_host --ggml-acts` against llama-eval-callback, 23 tokens | token 0 equal to 4 decimals through the first block; the other tokens within 1% through the first routed blocks |
+| Chat template, 211-token prompt, 32 steps: `mm_host` in floats against llama.cpp | 32 of 32, median \|d logprob\| 0.000, max 0.125 |
+| the same: `mm_host --acts32 1` (the engine's rounding) against the floats | 32 of 32, mean KL 0.0003 |
+| the same: **the engine on B70 + B65 + B60** (blocks 0-26, 27-50, 51-59; XMX attention; chunked prompt) | **32 of 32, median 0.000, max 0.131** |
+| 3,832-token chat prompt (30 blocks: the selection is on), 32 steps, the engine on the three cards | 28 of 32, median 0.013, max 1.035; the 4 misses at reference margins 0.11, 0.18, 0.62, 1.21 |
+| the same with `XEMAYA_MM_DENSE=1` (no selection) | 28 of 32, median 0.014: this prompt does not tell the selection from none |
+| Raw text, 24 tokens, 16 steps: llama.cpp against `mm_host` in floats | 9 of 16 (llama.cpp's own rounding); the engine against `mm_host` 8-13 of 16 from run to run |
+| the same on the host: int8 a block of 32 against floats; with the remainder rounded again (`--acts32 2`) | 9 of 16, median KL 0.20; 15 of 16, median KL 0.002 |
+
+**Unverified:** the selection inside the model against llama.cpp's own selection (only the kernel's parity test checks
+it); `mm_host` at 3.8K tokens (hours on the host); the 528-token raw reference; contexts past 3.8K; the serve path,
+the chat template in `serve/`, tool calls; vision and the drafter (not started); the free mode and the Windows
+cross build (built with icpx 2026.2 only).
+
+**Speed, first runs** (three cards, `--layer-split auto`, `--mmap-experts`, greedy, `--spec 0`; one load, requests in
+turn; the host's CPU was shared with reference jobs during this run, so the figures are a floor):
+
+| Request | Prefill tok/s | TTFT s | Decode tok/s | Experts hit in VRAM |
+|---|---|---|---|---|
+| chat, 211 tokens, first after the load | 2.0 | 108 | 1.78 | 78% |
+| 3,832 tokens (3,645 read) | 50.9 | 72 | 2.16 | 86% |
+| chat again | 7.4 | 29 | 2.94 | 84% |
+| 3,832 tokens again | 59.7 | 61 | 2.32 | 89% |
+
+VRAM: B70 31.6 GB, B65 31.7 GB, B60 23.0 GB. The tier holds 4,608 of 7,296 experts (B70 69 a layer, B65 75, the
+B60's 9 layers whole). Each request read 95-198 GB from the model's files: the experts outside VRAM are read from the
+drive every time under `--mmap-experts`, and the CPU pool took 92% of the decode windows' time.
+
+## Three GPUs for DeepSeek-V4.1 (2026-11-10 04:30-06:12 UTC, commit `61bd5d654`)
+
+Coder GSQ-RCO IQ2_XXS on B70 + B65 + B60 (`--layer-split auto` with `XEMAYA_SLOW_LINK_GPUS=1`: blocks 0-13, 14-28,
+29-39, every expert in VRAM), greedy, forced along the llama.cpp v0.8.0 CPU references. Logs:
+`/DATA/Projects/xemaya/logs/window6/`.
+
+- A layer split now cuts anywhere (`PlainModel::DsCarry`: the closed compressed rows, the last selection and the
+  candidate blocks cross a cut with the streams); a stage whose tier holds every expert plans its windows' experts on
+  the GPU (`MoeWindow::direct`: no ring, a window one graph); `ds41_sink_attn_xmx` in prompt chunks and windows.
+- Correctness: three stages on the OpenCL CPU device 16 of 16 on both prompts; three GPUs with the XMX attention
+  16 of 16 (median 0.009, max 0.096) and 16 of 16 (0.010, 0.155). GLM-5.3 on three GPUs: 126 of 128, its baseline.
+- Warm 576-token prompt: two GPUs chunked 79.9-100.0 tok/s, three GPUs 99.2-110.3, + direct 124.7-125.4, + XMX
+  **206.9-209.2**; 2,876 tokens: 93.2, 93.2, 100.3, **224.8** tok/s; the first prompt after a load 15.9 -> 133.9
+  (the load 6 -> 37 s: it reads all 68 GB). Decode after those prompts: 15.6-16.6, 15.1-16.1, 15.6-18.0,
+  **19.5-21.7** tok/s.
+- Not checked: Qwen with direct tiers on a GPU, the full 384-expert model on three GPUs.
 
 ## Works (checked)
 
@@ -121,7 +206,7 @@ NVMe during the prompt.
 5. Untested: contexts beyond 2.4K, the OpenAI/Anthropic serve path, tool calls, streaming, long soaks, concurrent
    requests, and other prompts. Correctness rests on one 16-token comparison plus the kernel tests.
 
-## Handoff: where the work stands (2026-11-10 01:00 UTC, read this first)
+## Earlier handoff (2026-11-10 01:00 UTC; superseded by the one at the top)
 
 - **2026-11-10 03:54 UTC: DeepSeek-V4.1 runs natively on the B70 + B65** (window 5, the section below this handoff).
   Steps 1 and 2 of the list here are done; step 3 (the chunked prompt path) is next.

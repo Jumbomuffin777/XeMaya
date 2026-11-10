@@ -2256,7 +2256,7 @@ void PlainModel::mm_attention(const Block& b, int64_t a, int64_t T, const float*
     const int32_t* pos_k = pos_ + (size_t) opt_.max_t * NH;
     const int32_t* pos_1 = pos_ + (size_t) opt_.max_t * (NH + NKV);
     const int32_t *sel = nullptr, *cnt = nullptr;
-    if (!b.dense_ffn) {
+    if (!b.dense_ffn && !k::mm_msa_dense()) {
         auto proj = [&](const W& w, float* y) {   // from hn_'s q8_1 in xq_ (the block's norm wrote both)
             if (w.type == kBF16)
                 k::bf16_gemv_fp32_mmvf_multi(hn_, w.n_in, static_cast<const uint16_t*>(w.data), y, w.n_out, w.n_in,

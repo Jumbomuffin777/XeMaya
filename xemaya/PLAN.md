@@ -1,6 +1,7 @@
 # XeMaya plan
 
-XeMaya is an Intel Arc-first native inference engine for GLM-5.3-Flash, DeepSeek-V4.1-Flash and Qwen3.8-Flash-Next.
+XeMaya is an Intel Arc-first native inference engine for GLM-5.3-Flash, DeepSeek-V4.1-Flash, MiniMax-M3.1-Flash and
+Qwen3.8-Flash-Next.
 It is not a CUDA compatibility layer and not a llama.cpp wrapper.
 
 ## Architecture decision (2026-11-09)
@@ -49,7 +50,8 @@ oneAPI. intel/llvm DPC++ 7+ still works.
 | 1 | Foundation: repo, history, licences, icpx build, CPU-device kernel testing | done |
 | 2 | Upstream Strata v0.2.8 -> v0.2.12: `serve/` correctness (tool calls, request lifecycle, Anthropic route) | tool calls done; lifecycle pending |
 | 3 | Native GLM-5.3-Flash: Maya-S v2 (IQ2_XXS) on the Arc cards, output checked against llama.cpp | runs on B70+B65+B60, 16/16 tokens match (2026-11-09); tuning |
-| 4 | Native DeepSeek-V4.1-Flash: PlainModel `deepseek41` block, SYCL kernels with CPU-device parity tests | runs on B70 + B65, checked against llama.cpp on two prompts (2026-11-10); the chunked prompt path next |
+| 4 | Native DeepSeek-V4.1-Flash: PlainModel `deepseek41` block, SYCL kernels with CPU-device parity tests | runs on B70 + B65 + B60 with the XMX attention, both references 16 of 16, 207-225 / 19.5-21.7 tok/s (2026-11-10); the full model, serve next |
+| 6 | Native MiniMax-M3.1-Flash: Maya-S IQ2_XXS in PlainModel's generic block, the sparse attention (MSA) kernels, `mm_host` as the reference | runs on B70 + B65 + B60, 32 of 32 on the chat-template reference (2026-11-10); the experts outside VRAM, speed, serve, vision and the drafter next (STATUS) |
 | 5 | Performance and reliability: decode/prefill, expert residency, PCIe, multi-GPU scheduling, API soak | GLM measured (STATUS); tiled attention and the prompt-end checkpoint built, window 3 prepared |
 
 ### Milestone 3: GLM-5.3-Flash
@@ -136,3 +138,16 @@ fills before each replay, so one graph per window size serves every step.
 Port order (one commit each, serve tests green after each): tool-call parser (#4701, #4663, #4751, #5276, #5281,
 #5409, #5040), request lifecycle (#4271, #4479, #4738, #5044, #4792, #3443, answers one request late), Anthropic context
 overflow wording, fatal GPU error restart. Skipped: DFlash2, replicas/shared arena, CUDA/HIP-only defaults, GUI, Metal.
+
+### Milestone 6: MiniMax-M3.1-Flash
+
+Reference graph: llama.cpp `src/models/minimax-m3.cpp` (master 8642541b2). The model is qwen3moe's block with leading
+dense FFNs, a sigmoid router with a selection bias, an ungated shared expert, swiglu-oai, and MiniMax Sparse Attention
+in the blocks that route. Its measure of correctness is the chat-template reference and `mm_host` (the model in
+floats), not raw-text references: the first token's row amplifies activation rounding (STATUS).
+
+1. Done: the model spec, the kernels (`minimax.hpp`, `minimax_parity`), the block in the windows and the prompt
+   chunks, `mm_host`, the first runs on three GPUs.
+2. Speed: 102 GiB of experts against 72 GiB of VRAM for them. The RAM copy for the rest, the slow-link GPU's spare
+   room, a profile at load, the missed experts over PCIe; the selection's scores on the matrix engines.
+3. Serve: the chat template, tool calls; then the vision encoder and the DSpark drafter (safetensors files).

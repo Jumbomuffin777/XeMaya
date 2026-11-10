@@ -51,6 +51,8 @@ void mm_msa_attn(const float* q, const uint16_t* k_pool, const uint16_t* v_pool,
 bool mm_msa_attn_xmx(const float* q, const uint16_t* k_pool, const uint16_t* v_pool, const int32_t* page_table,
                      const int32_t* step, int step_stride, const int32_t* sel, const int32_t* count, int top_k,
                      int blk, const QsaShapes& s, float* attn, int64_t n_tok, void* stream);
+/// XEMAYA_MM_DENSE=1 (measuring): no block selection, every block attends every cell.
+bool mm_msa_dense();
 /// XEMAYA_MM_ATTN=ref keeps mm_msa_attn (default: xmx where the device takes it).
 bool mm_msa_attn_xmx_on();
 

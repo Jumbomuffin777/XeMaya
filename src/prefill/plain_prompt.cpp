@@ -1134,7 +1134,7 @@ bool PlainModel::prompt_chunks(const int32_t* tokens, int64_t n, int64_t pos, in
                     if (mm_) {   // XeMaya, MiniMax-M3: the sparse attention (kernels/minimax.hpp), a query a work-item
                         const int64_t ID = s.idx_key_length;
                         const int32_t *sel = nullptr, *cnt = nullptr;
-                        if (!b.dense_ffn) {
+                        if (!b.dense_ffn && !k::mm_msa_dense()) {
                             proj_hn(b.idx_q, P.mm_iqr);
                             proj_hn(b.idx_k, P.mm_ikr);
                             norm_rope(P.mm_iqr, ID, b.idx_q_norm, P.mm_iq, NKV, P.pos_k, ID);

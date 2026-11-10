@@ -225,6 +225,11 @@ constexpr size_t local_bytes() {
 
 }  // namespace
 
+bool mm_msa_dense() {
+    static const bool on = std::getenv("XEMAYA_MM_DENSE") != nullptr;
+    return on;
+}
+
 bool mm_msa_attn_xmx_on() {
     static const bool on = [] {
         const char* v = std::getenv("XEMAYA_MM_ATTN");
