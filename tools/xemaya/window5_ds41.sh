@@ -11,7 +11,7 @@
 #   4 GLM-5.3 Maya-S v2 forced along chat-agent (the recurrent checkpoint loop was regrouped for DeepSeek's state)
 # SAFETY: level_zero:0,1 (the B60 is never opened); no long-context run; engines end by themselves (no SIGKILL).
 set -u
-X=/DATA/Projects/xemaya; R=$X/XeMaya; W=$X/logs/window5; REF=$R/xemaya/reference; T=$R/tools/xemaya
+X=/DATA/Projects/xemaya; R=$X/XeMaya; W=${XEMAYA_WINDOW_DIR:-$X/logs/window5}; REF=$R/xemaya/reference; T=$R/tools/xemaya
 E=$X/build-engine
 DS=/mnt/ai/models/ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-Coder-GGUF/IQ2_XXS/DeepSeek-V4.1-Flash-1017-GSQ-RCO-Coder-IQ2_XXS-00001-of-00006.gguf
 GLM=/mnt/ai/models/peasantsmith/GLM-5.3-Flash-Maya-GGUF/Maya-S-v2-IQ2_XXS/GLM-5.3-Flash-Maya-S-v2-IQ2_XXS-00001-of-00003.gguf
