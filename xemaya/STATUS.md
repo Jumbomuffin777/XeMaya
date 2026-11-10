@@ -1,6 +1,6 @@
 # XeMaya status
 
-Updated 2026-11-09 19:00 UTC (after GPU window 3, which ended with Zability losing its network; see the incident). Branch `xemaya/main` = `origin/main` of the private
+Updated 2026-11-10 01:00 UTC (after GPU window 4: Qwen3.8 benchmarks, the DeepSeek-V4.1 block; the handoff is the next section).
 https://github.com/Jumbomuffin777/XeMaya. Every item below was run on Zability unless marked otherwise.
 
 ## Works (checked)
@@ -121,6 +121,116 @@ NVMe during the prompt.
 5. Untested: contexts beyond 2.4K, the OpenAI/Anthropic serve path, tool calls, streaming, long soaks, concurrent
    requests, and other prompts. Correctness rests on one 16-token comparison plus the kernel tests.
 
+## Handoff: where the work stands (2026-11-10 01:00 UTC, read this first)
+
+- **No GPU window is open.** Window 4 was closed at 22:50 UTC (production Qwen healthy, lease `qwen38-strata-iq3s`).
+  The Sonnet supervisor, Hermes and Pi agents are PARKED by the owner (HOLD at the top of `/home/dan/supervisor/CLAUDE.md`):
+  do not run `supervisor/start.sh`. A new window needs the owner's word; then B70 + B65 only, every job under
+  `tools/xemaya/safety_guard.sh`, preflight, the lease (`window4_qwen.sh` shows the form).
+- **DeepSeek-V4.1 is the main line.** Done and pushed: `src/reference/ds41_host.cpp` (the whole model on the host, the
+  oracle), `src/core/plain_ds41.cpp` (the block in PlainModel), the state kernels in `ds41.hpp`, IQ1_M down rows.
+  Checked: see the table below. **Next, in order:**
+  1. the 576-token prompt on the OpenCL CPU device (`/DATA/Projects/xemaya/logs/ds41-cpu/run-long.sh mid`, started
+     2026-11-10 00:45 UTC; result in `logs/ds41-cpu/mid.compare.txt`): it is the first run of the engine's top-k and
+     candidate blocks (more than 512 compressed rows);
+  2. in a GPU window: `ds41_parity` again, then the Coder file on B70 + B65 forced along
+     `xemaya/reference/ds41-coder-{short,mid}.json` (`--spec-follow`, `--dump-logits`, `compare_ref.py --forced`),
+     then prefill / decode / TTFT / VRAM residency; GLM's forced check again (the checkpoint loop was regrouped);
+  3. the chunked prompt path (the prompt runs in decode windows of 8 now: correct, slow), then the full 384-expert
+     model, the DeepSeek chat template and DSML tool calls in serve.
+- **Qwen3.8:** benchmarked (below). XeMaya equals XeStrata 0.2.2 and trails upstream Strata v0.2.12 by 17% in prefill.
+  The lever found: `STRATA_PREFILL_MMQ=0` (+7%); making it the measured default for 8K chunks is open work.
+- Tools of this window: `tools/xemaya/{qwen_bench.py, make_qwen_prompts.py, window4_qwen.sh, qwen_report.py,
+  ref_ds41.sh}`; raw results `xemaya/benchmarks/2026-11-09-window4-qwen/` and `/DATA/Projects/xemaya/logs/window4/`.
+
+## GPU window 4: Qwen3.8 Flash-Next on three engines, DeepSeek-V4.1 (2026-11-09 21:28-22:50 UTC)
+
+Owner-approved; B70 + B65 only (`ONEAPI_DEVICE_SELECTOR=level_zero:0,1`), no B60, every job under the lease and
+`safety_guard.sh` (no trip; no NIC, xe or AER message in the kernel log). Ended with `xemaya-window-end.sh`.
+
+**Qwen3.8 Flash-Next ISTA GSQ-RCO IQ3_S**, the production profile's arguments (`qwen38-ista-iq3s.json`: layer split
+26, int8 KV, 8192-token prompt chunks, `--pipeline-windows 1`, context 65,536 here, vision off), one load per run,
+the same token ids to every engine (`prompts/qwen`: 26,800-token prompts of source files with a code or a prose
+request, 256 greedy tokens). XeStrata and XeMaya do not have upstream's `--stream-experts`, `--trim-stage-weights`
+and `--vram-reserve-mib`: they ran with `--mmap-experts` (every expert was in VRAM in all runs: 100% hits).
+
+| Engine | 26.8K prefill tok/s | TTFT | Code decode tok/s | Prose decode tok/s | Short prompt code / prose |
+|---|---|---|---|---|---|
+| Upstream Strata v0.2.12 (engine 0.1.58 SYCL, the production binary), `--spec 4` | 2,211 / 2,216 | 12.1 s | 78.3 (85% of drafts kept) | 59.2 (56%) | 83.9 / 58.7 |
+| XeStrata 0.2.2 (tag `xe0.2.2-1`, built here with icpx 2026.2), `--spec 4` | 1,859 / 1,876 | 14.4 s | 76.5 (83%) | 57.3 (53%) | 80.4 / 61.4 |
+| **XeMaya** (`f85353c17`), `--spec 4` | 1,842 / 1,884 | 14.6 s | 76.6 (83%) | 57.1 (53%) | 80.4 / 61.4 |
+| **XeMaya**, `--spec 4`, `STRATA_PREFILL_MMQ=0` | **1,989 / 1,996** | 13.5 s | 70.1 (76%) | 60.9 (63%) | 80.2 / 61.7 |
+| Upstream Strata v0.2.12, `--spec 2` | 2,188 / 2,181 | 12.3 s | 67.3 | 58.1 | 68.8 / 59.5 |
+| XeStrata 0.2.2, `--spec 2` | 1,859 / 1,887 | 14.4 s | 67.6 | 59.3 | 68.9 / 62.0 |
+| XeMaya, `--spec 2` | 1,832 / 1,886 | 14.7 s | 67.7 | 59.1 | 68.9 / 61.9 |
+
+- **Against the targets** (XeStrata's historical 1,939 / 55.7 / 77.3 on B70 + B65, other prompts): prefill 1,989-1,996
+  with `STRATA_PREFILL_MMQ=0` (beats it; 1,842-1,884 by default does not), prose 57-61 (beats it), code 76.6 after a
+  long prompt and 80.4 after a short one (the historical figure's prompt is unknown). In this controlled A/B XeMaya
+  does **not** beat upstream Strata v0.2.12's prefill (2,211) or its code decode after a long prompt (78.3).
+- **Drafting cannot be turned off** for a native IQ pack on any of the three (`--spec T` needs T >= 2); `--spec 2` is
+  the least drafting. Agent turns: a follow-up to a 26.8K conversation starts in 0.23-0.27 s on all three (whole
+  prefix reused); a second request sharing 26.7K of prefix reuses 16,384 tokens (two chunks) on all three.
+- **VRAM:** Strata 30.9 / 30.5 GiB (B70 / B65), XeStrata and XeMaya 28.5 / 27.9 GiB. Load: 10 s, 13-63 s, 15-19 s.
+- **Where XeMaya loses the prefill:** the routed experts' products. Upstream's timed run spends 453 ms dequantizing
+  and 2.4 s in the experts' matrix products of 26.8K tokens; XeMaya's timed run (its timing adds syncs: 1,138 tok/s)
+  spends 7.1 s and 3.9 s there. The measured int8 / FP16 choice (int8 below 362 rows an expert on the B70, 181 on
+  the B65) loses to FP16 everywhere at 8K chunks (+7%); 4K and 16K chunks do not help (1,844-1,872, 1,783-1,803).
+- **Where it loses the decode:** the verify window costs the same (32.09 ms on both); XeMaya's draft step is 4.4 ms
+  against 3.1 ms. Fixed on the way: the 2-bit draft head was never built for this file's Q6_K head (the engine's
+  split row order had no host dequantizer, `f85353c17`); built, it measured slower here (214 vs 185 us a step) and
+  the engine keeps the whole head, so the decode did not change. The remaining gap is the draft layer itself.
+- The router's label for production still says `strata-0.2.11-sycl`; the installed release is v0.2.12
+  (`DEPLOYMENT-v0.2.12.json`, engine sha256 223c2440...). Not changed (the router's config is the owner's).
+
+**DeepSeek-V4.1-Flash** (ISTA-DASLab GSQ-RCO IQ2_XXS; Coder: 192 experts, 68 GB; full: 384 experts, 138 GB; Engram
+table 110 GB IQ4_NL):
+
+| Check | Result |
+|---|---|
+| `ds41_host` (the whole model on the host in F32) forced along llama.cpp v0.8.0's CPU reference, Coder, 24-token prompt | top-1 equal 16 of 16, median \|d logprob\| 0.003, max 0.110 |
+| the same, 576-token prompt (compressed rows past the top-k of 512, candidate blocks) | 16 of 16, median 0.011, max 0.043 |
+| `ds41_parity` with the new state kernels (ring store, block positions, streaming compressor, cache store), B70 and B65 | PASS on both |
+| The engine's block (`plain_ds41.cpp`) on the OpenCL CPU device, Coder, 24-token prompt, forced | 16 of 16, median 0.007, max 0.134 |
+| The engine's block, 576-token prompt, CPU device | running at the time of writing (see the handoff) |
+| On an Arc GPU | **not run yet** (the block was finished after the window closed) |
+
+Tensor types of the Coder file and the engine's kernels: Q8_0 and Q5_K projections (native_mmvq), BF16 compressor,
+router and indexer weights (widened at upload), F32 mixers, IQ1_M / IQ2_XS experts (IQ1_M down rows added), IQ4_NL
+Engram rows (dequantized on the host). The full model's reference and the DSML serve path are not done.
+
+**GLM-5.3:** no GLM run in this window; the kernels are unchanged. `plain_model.cpp`'s recurrent checkpoint loop was
+regrouped for the DeepSeek state: GLM's forced check must be repeated in the next window before any claim.
+
+## The 18:46 UTC reset of 2026-11-09: what the logs show (read-only review)
+
+- **It was not an orderly reboot and not a kernel crash that left a trace.** The previous boot's journal ends at
+  18:45:24 in the middle of normal messages (containers starting, firewall lines), with no shutdown sequence; the new
+  boot starts at 18:46:01 and finds the journal "corrupted or uncleanly shut down". The firmware's reset reason is
+  `0x00200800: ACPI power state transition occurred` (the two clean reboots before it show `0x00080800: software
+  wrote 0x6 to reset control register 0xCF9`). kdump was armed and left no dump; no panic, oops, MCE, thermal, OOM,
+  hung-task, xe, NVMe or AER message in the last 16 minutes; the watchdog-reset and thermal bits are not set.
+  That pattern fits a power-off and power-on from outside the OS (a held power button or a power cycle); the logs
+  cannot say who or what did it.
+- **No XeMaya command asked for a reboot.** None of its scripts contains one, and no reboot, poweroff or sysrq
+  appears in the journal. XeMaya's last job (`window3.sh`) had finished and unloaded at 18:41:46, 3.6 minutes before
+  the reset; the GPUs were idle.
+- **The network:** `eno1` (RTL8126, r8169) logged a transmit timeout at 17:49:58 and at 18:29:25 (during the 64K and
+  128K runs). It **recovered** after 18:29: SSH logins over Tailscale succeeded at 18:31:48 and 18:32:35. The final
+  loss began at 18:37:09 (DNS queries failing even to the gateway 192.168.1.1, Tailscale without UDP, then "network
+  is unreachable"), with **no** kernel message and no link change, while XeMaya's agent session was running with the
+  B60 loaded (its copy engine busy in bursts) and about 30 s before XeMaya reloaded the model. The earlier STATUS text
+  ("clean shutdown 18:45:12", "unreachable from 18:29") was wrong on both points and is corrected here.
+- **What links it to XeMaya:** timing only: three network failures in one evening, all while XeMaya used the B60
+  behind the chipset, none in the four days before or in window 4 (B70 + B65 only, 80 minutes of GPU load, no
+  event). **Not established:** the mechanism (chipset uplink contention is a hypothesis; a NIC firmware or driver
+  stall, or something on the LAN side, would look the same from these logs), and why the third failure logged
+  nothing.
+- **Mitigations and what they do not cover:** the B60 is out of auto splits, every GPU job runs under
+  `safety_guard.sh` (it would have stopped the job at both logged timeouts, and at the third through its gateway
+  ping), engines are not SIGKILLed. Not validated: that the B60 is the cause (that needs a deliberate, owner-run
+  test), and the guard cannot restore a NIC that has already stalled.
+
 ## Incident, 2026-11-09 18:29-18:46 UTC: Zability lost its network during window 3 (read this first)
 
 - **What happened:** the onboard RTL8126 5 GbE NIC (`eno1`, r8169 driver) logged `NETDEV WATCHDOG: transmit queue 0
@@ -235,10 +345,10 @@ finer GPU-side profile first.
 
 ## Needs the owner's approval (not done)
 
-1. Another GPU window only after you have seen the incident above. Proposed scope: B70 + B65 only (the B60 left out),
-   every job under `safety_guard.sh`, no 128K run; tests: the agent session with the fixed TTFT measurement, a retry
-   (same prompt) after the n-1 checkpoint fix, and a finer expert-stage profile.
-2. The NIC (r8169 / RTL8126 transmit timeouts): your call (see the incident).
+1. A GPU window for DeepSeek-V4.1's first run on Arc (B70 + B65, the safety guard, the Coder file; bounded: parity,
+   two forced prompts, one speed run) and GLM's forced re-check.
+2. The NIC (r8169 / RTL8126) and whether to test the B60 hypothesis deliberately: your call.
+3. The router's stale `strata-0.2.11-sycl` label for the v0.2.12 production engine: your config.
 
 ## Notes
 

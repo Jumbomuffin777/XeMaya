@@ -88,7 +88,9 @@ Steps (each with a CPU-device parity test against a host reference transcribed f
    Engram), in `include/strata/artifact/model_spec.hpp`.
 2. Done: the tensor manifest and its check (`include/strata/artifact/ds41_manifest.hpp`). Both real models pass.
 3. Done: the kernels (`include/strata/kernels/ds41.hpp`, `src/kernels/xe/ds41.cpp`, `ds41_parity` 18/18).
-4. Next: `src/core/plain_ds41.cpp`, the block in PlainModel, built like `plain_glm5.cpp` (design below).
+4. Written (2026-11-09): `src/core/plain_ds41.cpp`, the block in PlainModel, with `src/reference/ds41_host.cpp` as its
+   host oracle (16 of 16 against llama.cpp on two prompts). The block passes the 24-token forced check on the
+   OpenCL CPU device; open: the 576-token check, the first GPU run, a chunked prompt path (STATUS, handoff).
 5. Engram table: 110 GB IQ4_NL, read by row through the PLE reader (`src/ngram`, direct I/O), dequantised on the host.
    CPU expert lane: ggml's `vec_dot` covers IQ1_M and IQ2_XXS already (`native_expert.cpp` dispatches by type traits).
 6. GPU validation (approval): greedy tokens against llama.cpp-ds41 SYCL on the same file, then serve with DSML tool
