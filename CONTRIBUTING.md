@@ -3,10 +3,19 @@ SPDX-FileCopyrightText: 2026 MistVVK and the XeStrata contributors
 SPDX-License-Identifier: LGPL-3.0-or-later
 -->
 
-> **XeMaya** is a fork of XeStrata focused on Intel Arc and on GLM-5.3-Flash and DeepSeek-V4.1-Flash. The
+> **XeMaya** is a fork of XeStrata focused on Intel Arc and on Qwen3.8-Flash-Next, GLM-5.3-Flash, DeepSeek-V4.1-Flash and experimental MiniMax-M3.1-Flash. The
 > guidelines below are XeStrata's and apply here too. For XeMaya, please also include a parity test for new kernels
 > and a token-level comparison against llama.cpp for model changes.
 # Contributing
+
+For current implemented capabilities and qualification limits, read the [documentation map](DOCUMENTATION.md).
+XeMaya's direct CMake build accepts Intel oneAPI icpx (`XEMAYA_ALLOW_ICPX`); the inherited setup workflow below
+still uses intel/llvm. A successful icpx build alone does not validate free/contrib-llvm builds or Windows.
+Report which builds and hardware were actually checked, and mark the rest unverified.
+New XeMaya files use `SPDX-FileCopyrightText: 2026 the XeMaya contributors` and the applicable licence;
+retain all existing upstream notices. XeMaya documentation is maintained in English; the Japanese originals
+of inherited guides remain in the XeStrata repository.
+
 Reports and pull requests are welcome. Before sending one, read the sections below.
 
 ## The first rule: no dependence on the model number

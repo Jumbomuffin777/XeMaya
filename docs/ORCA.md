@@ -4,6 +4,11 @@ SPDX-FileCopyrightText: 2026 MistVVK and the XeStrata contributors
 SPDX-License-Identifier: LGPL-3.0-or-later AND MIT
 -->
 # Running OrcaRouter's IQ3_XXS
+
+> **Inherited XeStrata documentation.** For XeMaya's current model support, qualification limits and
+> direct oneAPI build, start with the [XeMaya documentation map](../DOCUMENTATION.md).
+> Upstream measurements and feature descriptions below are not fresh XeMaya validation.
+
 This is the procedure to pack and run `orcarouter/Qwen3.8-Flash-Next-Uncensored-GGUF` **IQ3_XXS** by hand, a model setup's menu does not offer.
 
 The repository is gated: downloading needs a login with a Hugging Face account that has accepted the terms on the model page.

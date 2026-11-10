@@ -5,6 +5,11 @@ SPDX-License-Identifier: LGPL-3.0-or-later AND MIT
 -->
 # KVA: reading the late layers of a long prompt approximately (opt-in, off by default)
 
+> **Inherited XeStrata documentation.** For XeMaya's current model support, qualification limits and
+> direct oneAPI build, start with the [XeMaya documentation map](../DOCUMENTATION.md).
+> Upstream measurements and feature descriptions below are not fresh XeMaya validation.
+
+
 KVA (upstream 0.2.7) reads the early layers of a long prompt exactly during prefill and builds only the state of the late layers.
 What a late layer builds is its GDN recurrence state and convolution history, its QSA K/V pages and its indexer keys.
 Its attention output, its output projection, its MoE half (router, experts, shared expert) and the transfers of those experts are skipped.

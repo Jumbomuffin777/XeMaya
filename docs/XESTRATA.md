@@ -5,6 +5,11 @@ SPDX-License-Identifier: LGPL-3.0-or-later AND MIT
 -->
 # XeStrata user guide (inherited)
 
+> **Inherited XeStrata documentation.** For XeMaya's current model support, qualification limits and
+> direct oneAPI build, start with the [XeMaya documentation map](../DOCUMENTATION.md).
+> Upstream measurements and feature descriptions below are not fresh XeMaya validation.
+
+
 > This is XeStrata's own README, kept in XeMaya as the guide to installing and running Qwen3.8-Flash-Next.
 > XeMaya's overview is in the [main README](../README.md).
 Run a 125-billion-parameter AI model on one Intel Arc, AMD Radeon or NVIDIA GPU and an ordinary PC.

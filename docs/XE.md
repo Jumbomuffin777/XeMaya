@@ -3,8 +3,13 @@ SPDX-FileCopyrightText: 2026 MistVVK and the XeStrata contributors
 SPDX-License-Identifier: LGPL-3.0-or-later
 -->
 # XeStrata on Intel GPUs
+
+> **Inherited XeStrata documentation.** For XeMaya's current model support, qualification limits and
+> direct oneAPI build, start with the [XeMaya documentation map](../DOCUMENTATION.md).
+> Upstream measurements and feature descriptions below are not fresh XeMaya validation.
+
 This document records how XeStrata's engine runs on Intel GPUs and how that was checked: what the engine requires of the GPU, and the ported arithmetic and its validation.
-How to use it is in the [README](../README.md) and the [details](DETAILS.md); how to build it, what setup does and the packages it needs, in [BUILD](BUILD.md).
+How to use it is in the [XeStrata guide](XESTRATA.md) and the [details](DETAILS.md); how to build it, what setup does and the packages it needs, in [BUILD](BUILD.md).
 This guide comes from XeStrata (its Japanese original is in the [XeStrata repository](https://github.com/MistVVK/XeStrata)).
 
 XeStrata xe0.2.8-1 runs Strata's engine on Intel GPUs through Level Zero and SYCL; its version is the upstream version it has integrated and the count of XeStrata's releases on it, from 1, joined by a hyphen (xe0.2.8-1; on an upstream pre-release such as the beta, the deb and rpm packages take "~" for its "-": xe0.2.0-beta-1 is 0.2.0~beta-1, a version before the release 0.2.0-1, which upgrades it; releases before 2026-10-13 added a number from the second one on: xe0.1.40.2.1).

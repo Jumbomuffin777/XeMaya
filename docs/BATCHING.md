@@ -5,6 +5,11 @@ SPDX-License-Identifier: LGPL-3.0-or-later AND MIT
 -->
 # Several requests at once (batch slots)
 
+> **Inherited XeStrata documentation.** For XeMaya's current model support, qualification limits and
+> direct oneAPI build, start with the [XeMaya documentation map](../DOCUMENTATION.md).
+> Upstream measurements and feature descriptions below are not fresh XeMaya validation.
+
+
 By default XeStrata serves **one request at a time**: the others wait in the server's queue.
 With `"parallel": N` (the engine's `--batch N`, also spelled `--slots N`) the engine keeps up to N conversations open and decodes them **together**.
 Every verify window then carries one token of each conversation, so the dense weights, the shared expert, the head and every routed expert two conversations share are read once per window for all of them.

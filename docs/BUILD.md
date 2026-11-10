@@ -3,8 +3,13 @@ SPDX-FileCopyrightText: 2026 MistVVK and the XeStrata contributors
 SPDX-License-Identifier: LGPL-3.0-or-later
 -->
 # Building XeStrata
+
+> **Inherited XeStrata documentation.** For XeMaya's current model support, qualification limits and
+> direct oneAPI build, start with the [XeMaya documentation map](../DOCUMENTATION.md).
+> Upstream measurements and feature descriptions below are not fresh XeMaya validation.
+
 How to install XeStrata from the source, the engine's build modes, what setup does and the packages it needs, how the deb and rpm packages are made, and the Podman container.
-How to install the packages and use XeStrata is in the [README](../README.md).
+How to install the packages and use XeStrata is in the [XeStrata guide](XESTRATA.md).
 This guide comes from XeStrata (its Japanese original is in the [XeStrata repository](https://github.com/MistVVK/XeStrata)).
 
 ## Installing from the source
@@ -14,7 +19,7 @@ On a distribution without the packages, or for development, install from the rep
 1. [Download this project](https://github.com/MistVVK/XeStrata/archive/refs/heads/main.zip) and unpack it
    (`git clone` works too).
 1. Install the packages in the [table](#packages): setup installs no system packages.
-1. Run **`./setup.sh`** in a terminal and answer its questions, the same as in the [README](../README.md#install).
+1. Run **`./setup.sh`** in a terminal and answer its questions, the same as in the [README](XESTRATA.md#install).
 
 setup checks the GPU, RAM and CPU, chooses a SYCL compiler and builds the engine ([Setup](#setup)), downloads the model and starts it.
 
@@ -219,7 +224,7 @@ The same executable runs on Intel GPUs too.
 1. It checks the GPU: through sysfs and the kernel driver's memory query, an Intel GPU on the xe or i915 driver,
    its VRAM, the render node's permissions, Resizable BAR and the PCIe link.
    An AMD GPU on amdgpu has its gfx (`gfx1200`, for example) read from the kernel's KFD topology, and `/dev/kfd`'s permissions checked too.
-   A GPU older than RDNA2, or one the distribution's rocBLAS (in a package, its engine) has no code for, is shown as not usable ([README](../README.md#amd-gpus)).
+   A GPU older than RDNA2, or one the distribution's rocBLAS (in a package, its engine) has no code for, is shown as not usable ([README](XESTRATA.md#amd-gpus)).
 1. It checks RAM and CPU and asks its questions.
 1. It chooses the SYCL compiler ([below](#the-sycl-compiler)) and compiles the engine in `build-xe`.
 
@@ -458,7 +463,7 @@ xe0.1.43.1-1 is `0.1.43.1-1` (for rpm, Version 0.1.43.1 and Release 1).
 
 ## Podman
 
-The Containerfile and the compose files in `container/` run XeStrata in a rootless Podman container (how to use it: [README](../README.md#podman)).
+The Containerfile and the compose files in `container/` run XeStrata in a rootless Podman container (how to use it: [README](XESTRATA.md#podman)).
 The image is built on the user's PC and not distributed: the contrib packages' image holds cuBLAS and oneMKL, which are not free software.
 
 - **What it holds**: the Fedora 44 image `tools/package/build.sh` uses (pinned by digest), with the release's rpm, checked against `SHA256SUMS`.
