@@ -19,6 +19,7 @@
 // src/models/qwen35.cpp at de7fa0a3) is qwen35moe's with the MoE replaced by a dense SwiGLU, down(silu(gate(h)) * up(h)),
 // in every block and in the MTP layer: no experts, so none of the tiers, the CPU pool or the window protocol.
 #include "strata/core/plain_model.hpp"
+#include "strata/hybrid/segment.hpp"
 
 #include "strata/artifact/dequant.hpp"
 #include "strata/artifact/gguf_reader.hpp"
@@ -382,11 +383,32 @@ bool PlainModel::load(const PlainOptions& opt, std::string& err) {
                 return false;
             }
     }
+    // XeMaya, the hybrid segment: this engine's blocks [s0, s1) of the model's nl
+    const int64_t s0 = opt_.seg_first, s1 = opt_.seg_last < 0 ? nl : opt_.seg_last;
+    const bool partial = s0 != 0 || s1 != nl;
+    if (s0 < 0 || s0 >= s1 || s1 > nl) {
+        err = "plain model: the segment's blocks are not inside the model's " + std::to_string(nl);
+        return false;
+    }
+    if (!opt_.remote.empty() && s1 == nl) {
+        err = "plain model: a remote segment takes the blocks after --segment-last, which is not given";
+        return false;
+    }
+    if (partial) {
+        // The other blocks' experts are never read: in place, a staged copy of the files needs only this segment's
+        // tensors.  (The RAM copy of every expert would read them all; one of this segment's alone is not built.)
+        if (!opt_.mmap_experts)
+            std::fprintf(stderr, "strata plain: a segment of the model (blocks %lld..%lld of %lld): its experts are "
+                                 "read in place\n", (long long) s0, (long long) s1 - 1, (long long) nl);
+        opt_.mmap_experts = true;
+        opt_.spec = 0;   // the drafts' windows go through every block: not over the link
+    }
     if (opt_.split_auto && !split_auto_points(err)) return false;
     const std::vector<int64_t>& at = opt_.split_at;
     for (size_t i = 0; i < at.size(); ++i)
-        if (at[i] < 1 || at[i] >= nl || (i > 0 && at[i] <= at[i - 1])) {
-            err = "plain model: --layer-split takes rising blocks from 1 to " + std::to_string(nl - 1);
+        if (at[i] <= s0 || at[i] >= s1 || (i > 0 && at[i] <= at[i - 1])) {
+            err = "plain model: --layer-split takes rising blocks from " + std::to_string(s0 + 1) + " to " +
+                  std::to_string(s1 - 1);
             return false;
         }
     if (!at.empty() && at.size() + 1 > split_devs_.size()) {
@@ -394,8 +416,8 @@ bool PlainModel::load(const PlainOptions& opt, std::string& err) {
               std::to_string(split_devs_.size()) + " are there for it";
         return false;
     }
-    lb_ = 0;
-    le_ = at.empty() ? nl : at[0];
+    lb_ = s0;
+    le_ = at.empty() ? s1 : at[0];
     dev_ = at.empty() ? -1 : split_devs_[0];
     {
         const OnDevice on(dev_);
@@ -403,7 +425,7 @@ bool PlainModel::load(const PlainOptions& opt, std::string& err) {
     }
     for (size_t i = 0; i < at.size(); ++i) {
         auto st = std::make_unique<PlainModel>();
-        const int64_t lb = at[i], le = i + 1 < at.size() ? at[i + 1] : nl;
+        const int64_t lb = at[i], le = i + 1 < at.size() ? at[i + 1] : s1;
         if (!st->load_stage(opt_, this, lb, le, split_devs_[i + 1], err)) return false;
         next_.push_back(std::move(st));
     }
@@ -422,7 +444,54 @@ bool PlainModel::load(const PlainOptions& opt, std::string& err) {
                      std::to_string(st->lb_) + ".." + std::to_string(st->le_ - 1);
         std::fprintf(stderr, "strata plain: a layer split: %s\n", where.c_str());
     }
+    if (partial && ds_) {
+        // DeepSeek-V4.1's cut carries more than rows in a prompt chunk (DsCarry: sections laid out by each stage's
+        // chunk capacity), which the link does not repack yet: its prompts go through the windows, whose hand-off is
+        // one block of hand_width() floats a row
+        for (PlainModel* st : chain()) st->opt_.prompt_chunk = 0;
+        std::fprintf(stderr, "strata plain: DeepSeek-V4.1 over a segment link: prompts are read through the decode "
+                             "windows\n");
+    }
+    if (!opt_.remote.empty()) {
+        auto link = std::make_unique<strata::hybrid::RemoteSegment>();
+        // the carry holds integers beside the rows: halves would round them
+        const bool f16 = opt_.remote_f16 && !ds_;
+        if (!link->connect(opt_.remote, opt_.remote_token, f16, err)) return false;
+        const strata::hybrid::Shape& w = link->shape();
+        const char* why = w.fingerprint != fingerprint() ? "holds another model (its tensor directory differs)"
+                          : w.seg_first != s1 || w.seg_last != nl ? "does not hold the blocks after this engine's"
+                          : w.hand_w != tail().hand_w_ || w.n_vocab != n_vocab_ ? "cuts the model's rows another way"
+                          : w.max_t < opt_.max_t || w.max_cells < opt_.max_cells ? "takes a shorter window or context"
+                          : nullptr;
+        if (why != nullptr) {
+            err = "plain model: the remote segment at " + opt_.remote + " " + why + " (blocks " +
+                  std::to_string(w.seg_first) + ".." + std::to_string(w.seg_last - 1) + ", window " +
+                  std::to_string(w.max_t) + ", context " + std::to_string(w.max_cells) + ")";
+            return false;
+        }
+        if (!link->reset(err)) return false;
+        std::fprintf(stderr, "strata plain: a remote segment: blocks %lld..%lld and the head on %s at %s, %lld floats a "
+                             "row in %s\n", (long long) w.seg_first, (long long) w.seg_last - 1, w.device.c_str(),
+                     opt_.remote.c_str(), (long long) w.hand_w, f16 ? "halves" : "FP32");
+        remote_ = std::move(link);
+    }
     return true;
+}
+
+uint64_t PlainModel::fingerprint() const {
+    strata::hybrid::Fnv f;
+    const ModelSpec& s = spec_;
+    for (const int64_t v : {(int64_t) s.arch, s.n_layer, s.n_embd, n_vocab_, s.n_head, s.n_expert, s.n_expert_used,
+                            s.n_ff_exp, s.key_length})
+        f.add((uint64_t) v);
+    for (size_t k = 0; k < model_->size(); ++k)
+        for (const TensorInfo& t : model_->shard(k).tensors()) {
+            f.add(t.name);
+            f.add((uint64_t) t.type);
+            f.add(t.offset);
+            for (const uint64_t d : t.shape) f.add(d);
+        }
+    return f.h;
 }
 
 bool PlainModel::load_stage(const PlainOptions& opt, PlainModel* root, int64_t lb, int64_t le, int dev,
@@ -461,14 +530,18 @@ bool PlainModel::split_auto_points(std::string& err) {
     int n = (int) split_devs_.size();
     if (n < 2) return true;
     const ModelSpec& s = spec_;
-    const int64_t M = s.n_moe_layers();
+    // XeMaya: a segment's blocks only (the whole model's without one)
+    const int64_t seg0 = opt_.seg_first, seg1 = opt_.seg_last < 0 ? s.n_layer : opt_.seg_last;
+    int64_t M = 0;
+    for (int64_t l = seg0; l < seg1; ++l) M += s.layer_routes(l) ? 1 : 0;
     if (M < n) return true;
     uint64_t head = 0;
-    if (size_t at = 0; const TensorInfo* t = model_->find("output.weight", &at)) head = tensor_payload_bytes(*t);
+    if (size_t at = 0; const TensorInfo* t = seg1 == s.n_layer ? model_->find("output.weight", &at) : nullptr)
+        head = tensor_payload_bytes(*t);
     // a MoE layer's experts (the largest layer's three tensors: a file's layers can differ in type), and whether the
     // last GPU runs the MTP layer as well
     uint64_t layer_b = 0;
-    for (int64_t l = 0; l < s.n_layer; ++l) {
+    for (int64_t l = seg0; l < seg1; ++l) {
         if (!s.layer_routes(l)) continue;
         uint64_t b = 0;
         for (const char* w : {"ffn_gate_exps", "ffn_up_exps", "ffn_down_exps"})
@@ -487,10 +560,10 @@ bool PlainModel::split_auto_points(std::string& err) {
             for (const TensorInfo& t : model_->shard(k).tensors()) {
                 if (t.name.rfind("blk.", 0) != 0) continue;
                 const long long l = std::strtoll(t.name.c_str() + 4, nullptr, 10);
-                if (l >= 0 && l < s.n_layer && s.layer_routes(l)) per[(size_t) l] += tensor_payload_bytes(t);
+                if (l >= seg0 && l < seg1 && s.layer_routes(l)) per[(size_t) l] += tensor_payload_bytes(t);
             }
         uint64_t sum = 0;
-        for (int64_t l = 0; l < s.n_layer; ++l) sum += s.layer_routes(l) ? per[(size_t) l] : 0;
+        for (int64_t l = seg0; l < seg1; ++l) sum += s.layer_routes(l) ? per[(size_t) l] : 0;
         block_mean = M > 0 ? (double) sum / (double) M : 0.0;
     }
     std::vector<double> room((size_t) n, 0.0), link((size_t) n, 0.0);
@@ -580,11 +653,11 @@ bool PlainModel::split_auto_points(std::string& err) {
             given += count[(size_t) d];
         }
     }
-    int64_t seen = 0, l = 0, want = 0;
+    int64_t seen = 0, l = seg0, want = 0;
     for (int d = 0; d + 1 < n; ++d) {
         want += count[(size_t) d];
-        while (l < s.n_layer && seen < want) seen += s.layer_routes(l++) ? 1 : 0;
-        if (l >= s.n_layer) break;
+        while (l < seg1 && seen < want) seen += s.layer_routes(l++) ? 1 : 0;
+        if (l >= seg1) break;
         opt_.split_at.push_back(l);
     }
     if ((int) opt_.split_at.size() != n - 1) opt_.split_at.clear();
@@ -1929,6 +2002,25 @@ uint64_t PlainModel::file_read_bytes() const {
     return in_ram_ || src_ == nullptr ? 0 : static_cast<const FileExpertSource*>(src_)->file_read_bytes();
 }
 
+std::vector<PlainModel::StageInfo> PlainModel::stages() {
+    std::vector<StageInfo> out;
+    for (PlainModel* st : chain()) {
+        const OnDevice on(st->dev_);
+        StageInfo s;
+        s.device = st->dev_;
+        s.name = strata::gpu::device_name(st->dev_ < 0 ? current_device() : st->dev_);
+        s.first = st->lb_;
+        s.last = st->le_ - 1;
+        size_t free_b = 0, total_b = 0;
+        if (strata::gpu::mem_info(&free_b, &total_b)) {
+            s.free_b = free_b;
+            s.total_b = total_b;
+        }
+        out.push_back(std::move(s));
+    }
+    return out;
+}
+
 std::vector<int64_t> PlainModel::split_points() const {
     std::vector<int64_t> at(next_.size());
     for (size_t i = 0; i < next_.size(); ++i) at[i] = next_[i]->lb_;
@@ -1964,6 +2056,21 @@ bool PlainModel::embed(int32_t tok, int64_t pos, float* dst) const {
 void PlainModel::set_sampler(const strata::kernels::SamplerParams& sp) {
     sampler_ = sp;
     for (auto& st : next_) st->sampler_ = sp;
+    if (remote_ == nullptr) return;
+    // the picks are the remote segment's: the settings travel, a device array of this engine's cannot
+    remote_err_.clear();
+    if (sp.logit_bias != nullptr || sp.allowed != nullptr) {
+        remote_err_ = "plain model: a logit bias or a grammar's mask does not reach the remote segment";
+        return;
+    }
+    strata::hybrid::SamplerWire w;
+    w.top_k = sp.top_k; w.min_keep = sp.min_keep; w.penalty_last_n = sp.penalty_last_n;
+    w.top_p = sp.top_p; w.min_p = sp.min_p; w.temperature = sp.temperature;
+    w.penalty_repeat = sp.penalty_repeat; w.penalty_freq = sp.penalty_freq; w.penalty_present = sp.penalty_present;
+    w.seed = sp.seed; w.greedy = sp.greedy ? 1 : 0; w.gumbel = sp.gumbel ? 1 : 0;
+    if (remote_->connected() && !remote_->sampler(w, remote_err_) && remote_err_.empty())
+        remote_err_ = "plain model: the remote segment did not take the sampler";
+    remote_sampler_ = w;
 }
 
 void PlainModel::dump_routes(int64_t layer, const int32_t* ids, int64_t n, int64_t k) {
@@ -2034,14 +2141,66 @@ size_t PlainModel::Snapshot::bytes() const {
 }
 
 size_t PlainModel::state_bytes(int64_t tokens) const {
-    size_t n = 0;
+    size_t n = remote_ != nullptr ? 24 : 0;   // the remote segment's part stays there: a ticket here
     for (const StatePart& p : state_parts(tokens)) n += p.bytes;
     for (const auto& st : next_) n += st->state_bytes(tokens);
     return n;
 }
 
 // Every stage's parts in order, each copied on its own GPU
+namespace {
+// XeMaya: the last part of a state saved with a remote segment: which worker process holds the rest, under which id
+struct RemoteTicket {
+    uint64_t magic = 0x54584d5953454758ull, epoch = 0, id = 0;
+};
+bool ticket_of(const std::vector<uint8_t>& part, RemoteTicket& t) {
+    if (part.size() != sizeof t) return false;
+    std::memcpy(&t, part.data(), sizeof t);
+    return t.magic == RemoteTicket().magic;
+}
+}  // namespace
+
+bool PlainModel::remote_save(bool recurrent, int64_t tokens, Snapshot& snap, size_t at, std::string& err) {
+    RemoteTicket t;
+    // a checkpoint saved again into the same snapshot keeps its id: the worker overwrites it
+    if (!(at < snap.parts.size() && ticket_of(snap.parts[at], t) && t.epoch == remote_->shape().epoch)) {
+        t = RemoteTicket();
+        t.id = ++remote_state_id_;
+    }
+    t.epoch = remote_->shape().epoch;
+    if (!remote_->save(t.id, tokens, recurrent, err)) return false;
+    snap.parts.resize(at + 1);
+    snap.parts[at].resize(sizeof t);
+    std::memcpy(snap.parts[at].data(), &t, sizeof t);
+    return true;
+}
+
+bool PlainModel::remote_restore(bool recurrent, const Snapshot& snap, std::string& err) {
+    RemoteTicket t;
+    if (snap.parts.empty() || !ticket_of(snap.parts.back(), t)) {
+        err = "plain model: a state saved without the remote segment";
+        return false;
+    }
+    if (t.epoch != remote_->shape().epoch) {
+        err = "plain model: the remote segment was started again since this state was saved: it no longer holds it";
+        return false;
+    }
+    return remote_->restore(t.id, recurrent, err);
+}
+
 bool PlainModel::save_state(int64_t tokens, Snapshot& snap, std::string& err) {
+    if (remote_ != nullptr) {
+        Snapshot local;   // this engine's parts, as without a link
+        remote_.swap(remote_held_);
+        const bool ok = save_state(tokens, local, err);
+        remote_.swap(remote_held_);
+        if (!ok) return false;
+        const size_t at = local.parts.size();
+        if (!snap.parts.empty()) local.parts.push_back(std::move(snap.parts.back()));   // its ticket, saved again
+        snap.tokens = tokens;
+        snap.parts = std::move(local.parts);
+        return remote_save(false, tokens, snap, at, err);
+    }
     snap.tokens = tokens;
     snap.parts.clear();
     for (PlainModel* st : chain()) {
@@ -2063,6 +2222,17 @@ bool PlainModel::save_state(int64_t tokens, Snapshot& snap, std::string& err) {
 }
 
 bool PlainModel::restore_state(const Snapshot& snap, std::string& err) {
+    if (remote_ != nullptr) {
+        if (!remote_->connected() && !remote_->reconnect(err)) return false;
+        if (!remote_restore(false, snap, err)) return false;
+        Snapshot local;   // this engine's parts: the snapshot's without the ticket (copied: restore reads, a state is kept)
+        local.tokens = snap.tokens;
+        local.parts.assign(snap.parts.begin(), snap.parts.end() - 1);
+        remote_.swap(remote_held_);
+        const bool ok = restore_state(local, err);
+        remote_.swap(remote_held_);
+        return ok;
+    }
     size_t i = 0, n = 0;
     for (PlainModel* st : chain()) n += st->state_parts(snap.tokens).size();
     if (n != snap.parts.size()) { err = "plain model: a state of another model"; return false; }
@@ -2092,6 +2262,17 @@ bool PlainModel::restore_state(const Snapshot& snap, std::string& err) {
 }
 
 bool PlainModel::save_recurrent(int64_t tokens, Snapshot& snap, std::string& err) {
+    if (remote_ != nullptr) {
+        std::vector<uint8_t> ticket = !snap.parts.empty() ? std::move(snap.parts.back()) : std::vector<uint8_t>();
+        if (!snap.parts.empty()) snap.parts.pop_back();
+        remote_.swap(remote_held_);
+        const bool ok = save_recurrent(tokens, snap, err);
+        remote_.swap(remote_held_);
+        if (!ok) return false;
+        const size_t at = snap.parts.size();
+        snap.parts.push_back(std::move(ticket));
+        return remote_save(true, tokens, snap, at, err);
+    }
     snap.tokens = tokens;
     size_t i = 0;
     for (PlainModel* st : chain()) {
@@ -2124,6 +2305,17 @@ bool PlainModel::save_recurrent(int64_t tokens, Snapshot& snap, std::string& err
 }
 
 bool PlainModel::restore_recurrent(const Snapshot& snap, std::string& err) {
+    if (remote_ != nullptr) {
+        if (!remote_->connected() && !remote_->reconnect(err)) return false;
+        if (!remote_restore(true, snap, err)) return false;
+        Snapshot local;
+        local.tokens = snap.tokens;
+        local.parts.assign(snap.parts.begin(), snap.parts.end() - 1);
+        remote_.swap(remote_held_);
+        const bool ok = restore_recurrent(local, err);
+        remote_.swap(remote_held_);
+        return ok;
+    }
     size_t i = 0;
     for (PlainModel* st : chain()) {
         const OnDevice on(st->dev_);
@@ -2163,6 +2355,7 @@ bool PlainModel::restore_recurrent(const Snapshot& snap, std::string& err) {
 }
 
 bool PlainModel::reset(std::string& err) {
+    if (remote_ != nullptr && remote_->connected() && !remote_->reset(err)) return false;
     for (auto& st : next_) {
         const OnDevice on(st->dev_);
         if (!st->reset(err)) return false;
@@ -2668,13 +2861,52 @@ bool PlainModel::forward(const int32_t* tokens, int T, int64_t pos, int32_t* out
         err = "plain model: the window is out of range";
         return false;
     }
-    const float* hand = nullptr;   // each stage's rows to the next
+    if (lb_ != 0) {
+        err = "plain model: this engine holds a segment of the model: its windows come over the link";
+        return false;
+    }
+    return forward_from(tokens, T, pos, nullptr, out, logits, err, defer);
+}
+
+bool PlainModel::segment_forward(const int32_t* tokens, int T, int64_t pos, const float* rows, int32_t* out,
+                                 float* logits, std::string& err, bool defer) {
+    if (T < 1 || T > opt_.max_t || pos < 0 || pos + T > opt_.max_cells || lb_ == 0 || rows == nullptr) {
+        err = "plain model: the segment's window is out of range";
+        return false;
+    }
+    return forward_from(tokens, T, pos, rows, out, logits, err, defer);
+}
+
+// XeMaya: the link is down at the start of a sequence: the worker ended the old one when the link broke, so a new
+// link starts clean.  Inside a sequence a broken link is the request's error (the caller starts over).
+bool PlainModel::remote_ready(int64_t pos, std::string& err) {
+    if (!remote_err_.empty()) { err = remote_err_; return false; }
+    if (remote_->connected()) return true;
+    if (pos != 0) {
+        err = "plain model: the link to the remote segment at " + remote_->address() + " is down";
+        return false;
+    }
+    if (!remote_->reconnect(err) || !remote_->reset(err) || !remote_->sampler(remote_sampler_, err)) return false;
+    std::fprintf(stderr, "strata plain: the remote segment at %s is back\n", remote_->address().c_str());
+    return true;
+}
+
+bool PlainModel::forward_from(const int32_t* tokens, int T, int64_t pos, const float* hand_in, int32_t* out,
+                              float* logits, std::string& err, bool defer) {
+    if (remote_ != nullptr && !remote_ready(pos, err)) return false;
+    const float* hand = hand_in;   // each stage's rows to the next
     for (PlainModel* st : chain()) {
         const OnDevice on(st->dev_);
         if (!st->stage_forward(tokens, T, pos, hand, err, defer)) return false;
         hand = st->h_hand_;
     }
     PlainModel& t = tail();
+    if (remote_ != nullptr)   // the blocks after this engine's, the head and the picks: over the link
+        return remote_->forward(tokens, T, pos, hand, defer, out, logits, err);
+    if (!t.last()) {
+        err = "plain model: this engine's blocks end before the model's and no remote segment takes the rest";
+        return false;
+    }
     const OnDevice on(t.dev_);
     for (int i = 0; i < T; ++i) out[i] = ((volatile int32_t*) t.h_out_)[i];
     if (logits != nullptr && !strata::gpu::copy(logits, t.logits_, (size_t) T * (size_t) n_vocab_ * 4)) {

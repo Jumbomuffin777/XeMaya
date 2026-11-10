@@ -221,10 +221,18 @@ target_link_libraries(strata-plan PRIVATE strata_plan)
 
 # ---- host-only platform and n-gram reader ----------------------------------
 # These never touched the GPU runtime; they sat inside the CUDA build only because their consumers did.
-add_library(strata_platform STATIC src/platform/memory.cpp src/platform/direct_file.cpp)
+add_library(strata_platform STATIC src/platform/memory.cpp src/platform/direct_file.cpp src/platform/net.cpp)
 target_include_directories(strata_platform PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 find_package(Threads REQUIRED)
 target_link_libraries(strata_platform PUBLIC strata_warnings Threads::Threads)
+if(WIN32)
+  target_link_libraries(strata_platform PUBLIC ws2_32)   # src/platform/net.cpp
+endif()
+
+# XeMaya: the hybrid segment link (include/strata/hybrid/): two engines, one model, the boundary's rows between them.
+# Host code only, so its test runs without a GPU.
+add_library(strata_hybrid STATIC src/hybrid/wire.cpp src/hybrid/segment_server.cpp src/hybrid/segment_client.cpp)
+target_link_libraries(strata_hybrid PUBLIC strata_platform)
 
 # `ngram.cpp` is the PLE hash and table geometry the GPU PLE block will share with the reader.
 add_library(strata_ngram STATIC src/kernels/ngram.cpp src/ngram/ple_reader.cpp)
@@ -236,6 +244,10 @@ if(STRATA_BUILD_TESTS)
   target_link_libraries(direct_file_async_test PRIVATE strata_platform)
   add_test(NAME direct_file_async_test COMMAND direct_file_async_test)
   # --aux-cpus: the CPU-set derivation (pure) and the placement of live threads; header-only, no GPU
+  # XeMaya: the segment link end to end over the loopback, a stand-in for the model's blocks (no GPU)
+  add_executable(segment_link_test tests/hybrid/segment_link_test.cpp)
+  target_link_libraries(segment_link_test PRIVATE strata_hybrid)
+  add_test(NAME segment_link_test COMMAND segment_link_test)
   add_executable(aux_cpus_test tests/platform/aux_cpus_test.cpp)
   target_link_libraries(aux_cpus_test PRIVATE strata_platform)
   add_test(NAME aux_cpus_test COMMAND aux_cpus_test)
@@ -438,12 +450,13 @@ if(STRATA_ENABLE_XE)
                                    src/core/remote_experts.cpp src/core/expert_cache.cpp src/core/native_head.cpp
                                    src/core/native_dense.cpp src/core/verify.cpp src/core/moe_window.cpp
                                    src/core/plain_model.cpp src/core/plain_glm5.cpp src/core/plain_ds41.cpp src/core/pcie_split.cpp
+                                   src/core/plain_segment.cpp
                                    src/core/mtp.cpp src/core/conversation_snapshot.cpp src/core/conversation_state.cpp
                                    src/core/conversation_memory.cpp src/core/conversation_disk.cpp
                                    src/core/conversation_file.cpp src/core/vmm.cpp src/core/draft_head.cpp
                                    src/core/grammar.cpp)
   target_include_directories(strata_engine PUBLIC include)
-  target_link_libraries(strata_engine PUBLIC strata_core strata_kernels strata_kernels_cpu strata_spec)
+  target_link_libraries(strata_engine PUBLIC strata_core strata_kernels strata_kernels_cpu strata_spec strata_hybrid)
   # grammar-constrained decoding (src/core/grammar.cpp, --serve's grammar=): xgrammar (Apache-2.0) at a pinned release
   # and dlpack (Apache-2.0), the one header it reads, both checked by SHA-256.  Built here from xgrammar's C++ sources
   # alone: its own CMakeLists builds Python bindings and compiles with -flto.  OFF: the engine builds without it and

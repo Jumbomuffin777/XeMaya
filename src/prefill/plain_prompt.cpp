@@ -12,6 +12,7 @@
 // The state is left as the windows leave it: the GDN recurrent state and conv history (the same layouts), the K/V
 // cells of the chunk's positions.  The decode then continues at the next position.
 #include "strata/core/plain_model.hpp"
+#include "strata/hybrid/segment.hpp"
 #include "strata/core/expert_tier.hpp"
 
 #include "strata/core/gpu.hpp"
@@ -272,7 +273,13 @@ bool PlainModel::prompt_warm(std::string& err) {
         if (!st->prompt_warm(err)) return false;
     }
     if (opt_.prompt_chunk <= 0 || prompt_host_ == nullptr) return true;
-    if (!prompt_borrow(std::min<int64_t>(opt_.prompt_chunk, 512), err)) return false;
+    if (!prompt_borrow(std::min<int64_t>(opt_.prompt_chunk, 512), err)) {
+        // XeMaya: a tier that lends too little for a chunk is not a failed load: there is nothing to warm, and the
+        // prompts go through the windows (prompt_one and prompt_open say so); a small segment's tier, for one
+        if (!borrow_short_) return false;
+        err.clear();
+        return true;
+    }
     const bool ok = prompt_warm_products(err);
     if (ok && dense_) prompt_dense_calibrate();
     std::string err2;
@@ -760,7 +767,12 @@ bool PlainModel::prompt_routed(int64_t ml, int64_t T, bool cpu_share, int32_t* r
 }
 
 bool PlainModel::prompt(const int32_t* tokens, int64_t n, int64_t pos, int32_t* out, float* logits, std::string& err) {
-    return next_.empty() ? prompt_one(tokens, n, pos, out, logits, err) : prompt_split(tokens, n, pos, out, logits, err);
+    if (lb_ != 0) {   // XeMaya
+        err = "plain prompt: this engine holds a segment of the model: its prompts come over the link";
+        return false;
+    }
+    return next_.empty() && remote_ == nullptr ? prompt_one(tokens, n, pos, out, logits, err)
+                                               : prompt_split(tokens, n, pos, out, logits, err);
 }
 
 bool PlainModel::encode(const int32_t* tokens, int64_t n, float* hidden, std::string& err) {
@@ -781,10 +793,11 @@ bool PlainModel::encode(const int32_t* tokens, int64_t n, float* hidden, std::st
 // longest through the stages in turn, the rows handed on through pinned memory, a stage of shorter chunks reading them
 // in its own.  Chunks of the shortest everywhere made the RTX 4070's 1K the B70's too, which then read every missed
 // expert four times as often: GLM-5.3-Flash's 4K prompt 78 tok/s (B70 + 4070, 2026-10-20)
-bool PlainModel::prompt_split(const int32_t* tokens, int64_t n, int64_t pos, int32_t* out, float* logits,
-                              std::string& err) {
+// XeMaya: in three steps (prompt_open, prompt_step, prompt_close), which a segment worker's link drives as well; with
+// a remote segment each chunk's last rows go over the link after this engine's stages, and its pick comes back.
+bool PlainModel::prompt_open(int64_t n, int64_t pos, int64_t T, int64_t& longest, int64_t& cap, std::string& err) {
     const std::vector<PlainModel*> c = chain();
-    int64_t T = n;
+    cap = INT64_MAX;
     for (PlainModel* st : c) {
         if (st->opt_.prompt_chunk <= 0 || n <= 0 || st->prompt_host_ == nullptr ||
             (st->hand_host_ == nullptr && !(st->first() && st->last()))) {
@@ -792,20 +805,18 @@ bool PlainModel::prompt_split(const int32_t* tokens, int64_t n, int64_t pos, int
             return false;
         }
         T = std::min(T, st->opt_.prompt_chunk);
+        if (st->hand_host_ != nullptr) cap = std::min(cap, st->hand_cap_);
     }
     if (pos < 0 || pos + n > opt_.max_cells) { err = "plain prompt: past the context"; return false; }
-    auto give_back = [&](size_t upto) {
-        std::string e2;
-        for (size_t i = 0; i < upto; ++i) {
-            const OnDevice on(c[i]->dev_);
-            (void) c[i]->prompt_return(e2);
-        }
-    };
-    int64_t longest = 0;
+    longest = 0;
     for (size_t i = 0; i < c.size(); ++i) {
         const OnDevice on(c[i]->dev_);
         if (!c[i]->prompt_borrow(T, err)) {
-            give_back(i);
+            std::string e2;
+            for (size_t k = 0; k < i; ++k) {
+                const OnDevice back(c[k]->dev_);
+                (void) c[k]->prompt_return(e2);
+            }
             if (c[i]->borrow_short_) {   // as prompt_one: the windows read the prompt
                 static bool said = false;
                 if (!said) std::fprintf(stderr, "strata plain: %s: prompts are read through the decode windows\n", err.c_str());
@@ -816,26 +827,63 @@ bool PlainModel::prompt_split(const int32_t* tokens, int64_t n, int64_t pos, int
         }
         longest = std::max(longest, c[i]->pb_.T);
     }
-    bool ok = true;
-    for (int64_t c0 = 0; ok && c0 < n; c0 += longest) {
-        const float* hand = nullptr;
-        for (PlainModel* st : c) {
-            const OnDevice on(st->dev_);
-            if (!st->prompt_chunks(tokens, n, pos, out, logits, err, c0, c0 + longest, hand)) { ok = false; break; }
-            hand = st->hand_host_;
-        }
+    longest = std::min(longest, cap);   // a step's rows fit every stage's pinned rows
+    return true;
+}
+
+bool PlainModel::prompt_step(const int32_t* tokens, int64_t n, int64_t pos, int64_t c0, int64_t c1, const float* rows,
+                             int32_t* out, float* logits, std::string& err) {
+    const float* hand = rows;
+    for (PlainModel* st : chain()) {
+        const OnDevice on(st->dev_);
+        if (!st->prompt_chunks(tokens, n, pos, out, logits, err, c0, c1, hand)) return false;
+        hand = st->hand_host_;
     }
+    return true;
+}
+
+bool PlainModel::prompt_close(bool settle, std::string& err) {
+    bool ok = true;
     std::string err2;
-    for (PlainModel* st : c) {
+    for (PlainModel* st : chain()) {
         const OnDevice on(st->dev_);
         if (!st->prompt_return(err2) && ok) { err = err2; ok = false; }
     }
-    if (!ok) return false;
-    for (PlainModel* st : c) {   // each tier's counts from the prompt, its free slots filled (prompt_one)
+    if (!ok || !settle) return ok;
+    for (PlainModel* st : chain()) {   // each tier's counts from the prompt, its free slots filled (prompt_one)
         const OnDevice on(st->dev_);
         if (!st->prompt_settle(err)) return false;
     }
     return true;
+}
+
+bool PlainModel::prompt_split(const int32_t* tokens, int64_t n, int64_t pos, int32_t* out, float* logits,
+                              std::string& err) {
+    if (remote_ != nullptr && !remote_ready(pos, err)) return false;
+    int64_t longest = 0, cap = 0;
+    if (!prompt_open(n, pos, n, longest, cap, err)) return false;
+    std::string err2;
+    if (remote_ != nullptr) {
+        int64_t far_longest = 0, far_cap = 0;
+        bool too_short = false;
+        if (!remote_->prompt_begin(tokens, n, pos, n, far_longest, far_cap, too_short, err)) {
+            (void) prompt_close(false, err2);
+            if (too_short) err.clear();   // the worker's tier lends too little: the windows read the prompt
+            return false;
+        }
+        // one step for both engines: the longer chunk (a stage of shorter ones reads it in its own), within what
+        // either end's pinned rows hold
+        longest = std::max<int64_t>(1, std::min(std::max(longest, far_longest), std::min(cap, far_cap)));
+    }
+    bool ok = true;
+    for (int64_t c0 = 0; ok && c0 < n; c0 += longest) {
+        ok = prompt_step(tokens, n, pos, c0, c0 + longest, nullptr, out, logits, err);
+        if (ok && remote_ != nullptr)
+            ok = remote_->prompt_chunk(c0, c0 + longest, n, tail().hand_host_, out, logits, err);
+    }
+    if (remote_ != nullptr && remote_->connected() && !remote_->prompt_end(err2) && ok) { err = err2; ok = false; }
+    if (!prompt_close(ok, err2) && ok) { err = err2; ok = false; }
+    return ok;
 }
 
 bool PlainModel::prompt_one(const int32_t* tokens, int64_t n, int64_t pos, int32_t* out, float* logits,

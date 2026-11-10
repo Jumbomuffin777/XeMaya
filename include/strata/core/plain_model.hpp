@@ -51,6 +51,11 @@
 #include <string>
 #include <vector>
 
+#include "strata/hybrid/wire.hpp"   // XeMaya: the segment link's shapes
+
+namespace strata::hybrid {
+class RemoteSegment;   // strata/hybrid/segment.hpp
+}
 namespace strata {
 class GgufModel;
 }
@@ -145,6 +150,16 @@ struct PlainOptions {
     bool split_auto = false;
     /// The engine's GPUs the later stages take (--split-device), in order; empty: the other cards
     std::vector<int> split_devices;
+    /// XeMaya, the hybrid segment (strata/hybrid/): this engine holds blocks [seg_first, seg_last) of the model only
+    /// (seg_last < 0: to the last block, with the head).  A layer split's points lie inside them.  The experts are
+    /// then read in place (mmap_experts), so the other blocks' are never touched: the model's files may be a staged
+    /// copy with only this segment's tensors filled in.
+    int64_t seg_first = 0, seg_last = -1;
+    /// ... and the engine that holds the blocks from seg_last on, a segment worker at host:port (--remote-segment):
+    /// this one hands it the boundary's rows and takes its picks.  `remote_token`: the secret the two prove to each
+    /// other; `remote_f16`: the rows travel as halves.
+    std::string remote, remote_token;
+    bool remote_f16 = false;
 };
 
 // NOLINTNEXTLINE(clang-analyzer-optin.performance.Padding): one object, its members grouped by what they serve
@@ -163,6 +178,7 @@ public:
     /// The model carries a recurrent state (GDN layers): a sequence can be extended, not cut back to a prefix.
     bool recurrent() const { return !gdn_state_.empty() || ds_; }
     int64_t max_cells() const { return opt_.max_cells; }
+    int max_window() const { return opt_.max_t; }   ///< XeMaya: the largest window (PlainOptions::max_t)
     /// The prompt's chunk (0: the prompt runs in windows; GLM-5.3-Flash's for now, whatever the options asked).
     int64_t prompt_chunk() const { return opt_.prompt_chunk; }
     /// --vision: the M-RoPE positions (t, h, w) of cells 0 .. n - 1, `pos3` 3 n of them on the host
@@ -284,6 +300,42 @@ public:
     int64_t ram_staged() const { return complement_ != nullptr ? complement_->ram_staged() : 0; }
     /// The layer split's first blocks after GPU 0's (empty: one GPU).
     std::vector<int64_t> split_points() const;
+    /// XeMaya: each stage's GPU (the engine's device number, -1 the current one), its name, its blocks and that GPU's
+    /// memory as it reports it now (0 where it does not), for the server's status (INFO stages=...).
+    struct StageInfo {
+        int device = -1;
+        std::string name;
+        int64_t first = 0, last = 0;
+        uint64_t free_b = 0, total_b = 0;
+    };
+    std::vector<StageInfo> stages();
+
+    // XeMaya, the hybrid segment.  A model loaded with a remote segment is driven as any other: forward, prompt,
+    // reset and the states go through the link by themselves.  The calls below are the worker's side: a model loaded
+    // with seg_first > 0, driven by the link (src/core/plain_segment.cpp).
+    /// The blocks this engine holds, first and one past the last
+    int64_t seg_first() const { return lb_; }
+    int64_t seg_last() const { return tail().le_; }
+    /// The floats a row has at a cut (n_embd, or a model's streams)
+    int64_t hand_width() const { return hand_w_; }
+    /// A hash of the model's shape and tensor directory: the two ends of a link hold the same model when theirs agree
+    uint64_t fingerprint() const;
+    /// The link to the engine after this one's blocks (null: none) and what it counted
+    const strata::hybrid::RemoteSegment* remote() const { return remote_.get(); }
+    /// forward() for a model whose first block is not the model's: `rows`, T rows of hand_width() floats, the rows
+    /// the blocks before it handed on
+    bool segment_forward(const int32_t* tokens, int T, int64_t pos, const float* rows, int32_t* out, float* logits,
+                         std::string& err, bool defer = false);
+    /// The prompt in three steps, as a layer split runs it: the stages borrow their chunk buffers (`longest`: the
+    /// chunk they take at most at once, `cap`: the most rows a step may hand in; false with `err` empty: the tier
+    /// lends too little, nothing was taken); then each step's tokens [c0, c1) of the n, their rows in (null for the
+    /// model's first blocks); then the buffers go back and the tiers settle.
+    bool prompt_open(int64_t n, int64_t pos, int64_t T, int64_t& longest, int64_t& cap, std::string& err);
+    bool prompt_step(const int32_t* tokens, int64_t n, int64_t pos, int64_t c0, int64_t c1, const float* rows,
+                     int32_t* out, float* logits, std::string& err);
+    bool prompt_close(bool settle, std::string& err);
+    /// The last stage's rows of the step just run, for the engine after this one (null: this one holds the last block)
+    const float* prompt_hand() const { return tail().last() ? nullptr : tail().hand_host_; }
     /// Writes what this run learned as a profile (rank_learned_profile: the experts in VRAM now, then by the routing
     /// counted since the load, then by the profile it started from), for the next load's `profile`.
     bool save_profile(const std::string& path, std::string& err) const;
@@ -303,6 +355,19 @@ private:
     PlainModel& tail() { return next_.empty() ? *this : *next_.back(); }
     const PlainModel& tail() const { return next_.empty() ? *this : *next_.back(); }
     std::vector<PlainModel*> chain();
+    // XeMaya: the engine after this one's blocks (the root's), a reason it could not be told something (the sampler),
+    // and the id of the next state it sets aside for this one
+    std::unique_ptr<strata::hybrid::RemoteSegment> remote_;
+    std::string remote_err_;
+    uint64_t remote_state_id_ = 0;
+    bool forward_from(const int32_t* tokens, int T, int64_t pos, const float* hand_in, int32_t* out, float* logits,
+                      std::string& err, bool defer);
+    /// The worker sets its state aside and the snapshot's part `at` becomes its ticket; ... and puts it back
+    bool remote_save(bool recurrent, int64_t tokens, Snapshot& snap, size_t at, std::string& err);
+    bool remote_restore(bool recurrent, const Snapshot& snap, std::string& err);
+    bool remote_ready(int64_t pos, std::string& err);
+    std::unique_ptr<strata::hybrid::RemoteSegment> remote_held_;   ///< remote_, set aside while the local parts run
+    strata::hybrid::SamplerWire remote_sampler_;                    ///< the sampler it was last told
     /// A later stage: blocks [lb, le) on GPU `dev`, the experts from root's tiers
     bool load_stage(const PlainOptions& opt, PlainModel* root, int64_t lb, int64_t le, int dev, std::string& err);
     /// The split's points from each GPU's free memory (split_auto)

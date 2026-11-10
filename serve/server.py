@@ -2952,11 +2952,47 @@ def layer_split_value(cfg: dict) -> str:
     return ",".join(str(x) for x in vals)
 
 
+def hybrid_plan(cfg: dict) -> dict | None:
+    """XeMaya, the hybrid segment: the plan a front-end wrote into the config's "hybrid_file" (a JSON file beside the
+    config, absent or empty when the model runs on this machine alone): {"segment_last": K, "remote": "host:port",
+    "wire": "f32" | "f16", "token": "..."} - this engine holds the blocks before K, a segment worker at `remote` the
+    rest and the head.  None without a plan; ValueError for one that is not usable (the start then says why instead
+    of running the whole model where part of it was meant to be elsewhere)."""
+    path = cfg.get("hybrid_file")
+    if not path or not os.path.isfile(path) or os.path.getsize(path) == 0:
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            plan = json.load(f)
+    except (OSError, ValueError) as e:
+        raise ValueError(f"hybrid_file {path}: {e}") from None
+    if not isinstance(plan, dict) or not plan.get("enabled", True):
+        return None
+    k, remote, wire = plan.get("segment_last"), str(plan.get("remote") or ""), plan.get("wire") or "f32"
+    host, _, port = remote.rpartition(":")
+    if not isinstance(k, int) or isinstance(k, bool) or k < 1 or not host or not port.isdigit() or wire not in ("f32", "f16"):
+        raise ValueError(f"hybrid_file {path}: needs segment_last (a block from 1), remote (host:port) and wire "
+                         "(f32 or f16)")
+    return {"segment_last": k, "remote": remote, "wire": wire, "token": str(plan.get("token") or "")}
+
+
+def hybrid_args(cfg: dict) -> list[str]:
+    """The engine's arguments for the config's hybrid plan (none without one).  The link's shared secret goes to the
+    engine through the environment (XEMAYA_SEGMENT_TOKEN), never on its command line."""
+    plan = hybrid_plan(cfg)
+    if plan is None:
+        return []
+    if plan["token"]:
+        os.environ["XEMAYA_SEGMENT_TOKEN"] = plan["token"]
+    return ["--segment-last", str(plan["segment_last"]), "--remote-segment", plan["remote"],
+            "--segment-wire", plan["wire"]]
+
+
 def engine_args(cfg: dict) -> list[str]:
     """The engine's arguments: the config's, and with several GPUs the layer split across them ("layer_split" in the
     config: "auto" by default, or the first layer of each later GPU's share, e.g. "18" or "16,32"; see
     layer_split_value)."""
-    args = list(cfg["args"])
+    args = list(cfg["args"]) + hybrid_args(cfg)
     # #1322: a config with a "vision" section but without --vision in its args (written by an older setup run, or edited
     # by hand) advertised images and then refused every picture ("this engine was started without --vision").  The
     # section says images are wanted: start the engine with them, and keep the encoder's VRAM free as setup does for a
@@ -4171,6 +4207,10 @@ class Service:
             "engine_failure": self.engine_failure,
             "vram": dict((getattr(self.engine, "info", {}) or {}).get("vram") or {},
                          elastic=bool((getattr(self.engine, "info", {}) or {}).get("vram_elastic"))),
+            # XeMaya: the plain models' layer split as the engine reported it at load (INFO stages=...)
+            "stages": engine_stages(getattr(self.engine, "info", {}) or {}),
+            # ... and the blocks a segment worker on another machine holds (INFO hybrid=...), None without one
+            "hybrid": engine_hybrid(getattr(self.engine, "info", {}) or {}),
             "machine": {
                 "at": int(time.time()),
                 "gpu": ({"name": static.get("gpu_name"), "used_mib": scaled(hw.get("gpu_mem_used"), 2 ** 20),
@@ -5244,6 +5284,48 @@ def answer_speed(last: dict, generated: int, wall_s: float | None = None) -> flo
     if generated and wall_s is not None and wall_s >= RATE_MIN_SPAN_S:
         return round(generated / wall_s, 1)
     return None
+
+
+def engine_stages(info: dict) -> list[dict]:
+    """XeMaya: the engine's INFO stages= line as a list: each stage's blocks, its GPU (the engine's number, -1 the
+    current one), that GPU's name and memory used / total in MiB after the load.  Empty when the engine did not say
+    (an engine before it, or the Qwen3.8 engine)."""
+    raw = str(info.get("stages") or "")
+    if not raw:
+        return []
+
+    def col(key):
+        return str(info.get(key) or "").split(",")
+    names, used, total = col("gpu_names"), col("gpu_used_mib"), col("gpu_total_mib")
+    out = []
+    for i, part in enumerate(raw.split(",")):
+        blocks, _, dev = part.partition("@")
+        first, _, last = blocks.partition("-")
+        try:
+            stage = {"first_block": int(first), "last_block": int(last), "device": int(dev or -1)}
+        except ValueError:
+            continue
+        if i < len(names):
+            stage["gpu"] = names[i].replace("_", " ")
+        for key, vals in (("used_mib", used), ("total_mib", total)):
+            if i < len(vals) and vals[i].isdigit():
+                stage[key] = int(vals[i])
+        out.append(stage)
+    return out
+
+
+def engine_hybrid(info: dict) -> dict | None:
+    """XeMaya: the engine's INFO hybrid= line: the segment worker's address, its blocks, its device and how the
+    boundary's rows travel.  None when the engine runs the whole model."""
+    addr = str(info.get("hybrid") or "")
+    if not addr:
+        return None
+    first, _, last = str(info.get("hybrid_blocks") or "").partition("-")
+    out = {"address": addr, "device": str(info.get("hybrid_device") or "").replace("_", " "),
+           "wire": str(info.get("hybrid_wire") or "f32")}
+    if first.isdigit() and last.isdigit():
+        out["first_block"], out["last_block"] = int(first), int(last)
+    return out
 
 
 def request_timings(prompt_tokens: int, generated: int, last: dict) -> dict | None:

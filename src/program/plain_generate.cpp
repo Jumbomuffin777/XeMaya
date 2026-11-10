@@ -18,6 +18,9 @@
 #include "strata/core/conversation_memory.hpp"
 #include "strata/core/device.hpp"
 #include "strata/core/plain_model.hpp"
+#include "strata/core/plain_segment.hpp"
+#include "strata/hybrid/segment.hpp"
+#include "strata/platform/net.hpp"
 #include "strata/core/runtime.hpp"
 #include "strata/kernels/sampler.hpp"
 #include "strata/platform/memory.hpp"
@@ -335,6 +338,31 @@ static int plain_serve(strata::core::PlainModel& model, const strata::core::Plai
     std::string err;
     std::printf("INFO context=%lld expert_slots=%lld vram_elastic=%d\n", (long long) ctx, (long long) model.slots(),
                 model.vram_elastic() ? 1 : 0);
+    {   // XeMaya: the stages of a layer split (one with one GPU), for the server's /v1/status: a stage's blocks, its
+        // GPU, that GPU's memory used and total (MiB) after the load, and its name (spaces as '_': one INFO word)
+        std::string st, names, used, total;
+        for (const auto& s : model.stages()) {
+            const char* sep = st.empty() ? "" : ",";
+            std::string name = s.name;
+            for (char& c : name)
+                if (c == ' ' || c == ',' || c == '=') c = '_';
+            st += sep + std::to_string(s.first) + "-" + std::to_string(s.last) + "@" + std::to_string(s.device);
+            names += sep + name;
+            used += sep + std::to_string((s.total_b - std::min(s.free_b, s.total_b)) >> 20);
+            total += sep + std::to_string(s.total_b >> 20);
+        }
+        std::printf("INFO stages=%s gpu_names=%s gpu_used_mib=%s gpu_total_mib=%s\n", st.c_str(), names.c_str(),
+                    used.c_str(), total.c_str());
+    }
+    if (const strata::hybrid::RemoteSegment* far = model.remote()) {
+        // XeMaya: the blocks another engine holds (a segment worker), for the server's status
+        std::string dev = far->shape().device;
+        for (char& c : dev)
+            if (c == ' ' || c == ',' || c == '=') c = '_';
+        std::printf("INFO hybrid=%s hybrid_blocks=%lld-%lld hybrid_device=%s hybrid_wire=%s\n", far->address().c_str(),
+                    (long long) far->shape().seg_first, (long long) far->shape().seg_last - 1, dev.c_str(),
+                    far->f16() ? "f16" : "f32");
+    }
     strata::platform::settle_before_ready();
     std::printf("READY %lld stop\n", (long long) ctx);
     std::fflush(stdout);
@@ -766,6 +794,12 @@ static int plain_serve(strata::core::PlainModel& model, const strata::core::Plai
             continue;
         }
         const Clock::time_point t2 = Clock::now();
+        if (const strata::hybrid::RemoteSegment* far = model.remote()) {   // XeMaya: what the link cost so far
+            const strata::hybrid::LinkStats& k = far->link();
+            std::fprintf(stderr, "strata (%s): segment link: %llu calls, %.1f MB out, %.1f MB back, %.0f ms in all, "
+                                 "%.0f ms of it the worker's blocks\n", arch.c_str(), (unsigned long long) k.calls,
+                         (double) k.bytes_out / 1e6, (double) k.bytes_in / 1e6, k.round_ms, k.remote_ms);
+        }
         const double prompt_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
         const double decode_ms = std::chrono::duration<double, std::milli>(t2 - t1).count();
         strata::program::print_done({(int64_t) produced, (int64_t) n, prompt_ms, decode_ms, finish,
@@ -845,7 +879,14 @@ static void plain_usage(const std::string& arch) {
                  "  --gpu PCI            the GPU (its PCI address)\n"
                  "  --layer-split K[,K2..]|auto  the blocks across the GPUs: the first runs the blocks before K, the\n"
                  "                       next those from K on, ..; auto: in proportion to each GPU's free memory\n"
-                 "  --split-device D[,D2..]  the later GPUs (engine numbers or PCI addresses; default the other cards)\n",
+                 "  --split-device D[,D2..]  the later GPUs (engine numbers or PCI addresses; default the other cards)\n"
+                 "  --segment-last K     XeMaya, the hybrid segment: this engine holds the blocks before K, and\n"
+                 "  --remote-segment HOST:PORT  the segment worker that holds the blocks from K on and the head\n"
+                 "  --segment-wire f32|f16  the boundary's rows over the link: exact, or halves (half the bytes)\n"
+                 "  --segment-first K    the worker: this engine holds the blocks from K on, and\n"
+                 "  --segment-serve [HOST:]PORT  serves them to the engine that holds the others (PORT 0: any)\n"
+                 "  --segment-state-mib N  the worker: RAM for the conversations set aside (default 4096)\n"
+                 "                       (the link's shared secret: the environment's XEMAYA_SEGMENT_TOKEN)\n",
                  arch.c_str());
 }
 
@@ -904,6 +945,8 @@ int plain_main(int argc, char** argv) {
     shared.rope_freq_base = &opt.rope_freq_base;
     shared.rope_freq_scale = &opt.rope_freq_scale;
     shared.yarn_orig_ctx = &opt.yarn_orig_ctx;
+    std::string segment_serve;            // XeMaya: --segment-serve's [HOST:]PORT (empty: not a segment worker)
+    int64_t segment_state_mib = 4096;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         auto next = [&](const char* what) -> const char* {
@@ -998,6 +1041,17 @@ int plain_main(int argc, char** argv) {
             }
         }
         else if (a == "--split-order") (void) next("--split-order");   // the stages take the GPUs as given
+        // XeMaya, the hybrid segment (strata/hybrid/)
+        else if (a == "--segment-first") opt.seg_first = std::strtoll(next("--segment-first"), nullptr, 10);
+        else if (a == "--segment-last") opt.seg_last = std::strtoll(next("--segment-last"), nullptr, 10);
+        else if (a == "--remote-segment") opt.remote = next("--remote-segment");
+        else if (a == "--segment-serve") segment_serve = next("--segment-serve");
+        else if (a == "--segment-state-mib") segment_state_mib = std::strtoll(next("--segment-state-mib"), nullptr, 10);
+        else if (a == "--segment-wire") {
+            const std::string v = next("--segment-wire");
+            if (v != "f32" && v != "f16") { std::fprintf(stderr, "--segment-wire takes f32 or f16\n"); return 2; }
+            opt.remote_f16 = v == "f16";
+        }
         else if (a == "--vram-reserve-mib")
             opt.reserve_mib = std::max<int64_t>(0, std::strtoll(next("--vram-reserve-mib"), nullptr, 10));
         else if (a == "--expert-cache") {
@@ -1039,7 +1093,17 @@ int plain_main(int argc, char** argv) {
         }
     }
     if (!follow.empty()) n_new = std::min<int64_t>(n_new, (int64_t) follow.size());   // the run ends with it
-    if (!serve && (prompt.empty() || n_new < 1)) {
+    if (const char* tok = std::getenv("XEMAYA_SEGMENT_TOKEN")) opt.remote_token = tok;
+    if (!segment_serve.empty() && (opt.seg_first <= 0 || !opt.remote.empty() || serve)) {
+        std::fprintf(stderr, "strata (%s): --segment-serve goes with --segment-first K alone (no --serve, no "
+                             "--remote-segment)\n", arch.c_str());
+        return 2;
+    }
+    if (segment_serve.empty() && opt.seg_first != 0) {
+        std::fprintf(stderr, "strata (%s): --segment-first is the worker's (--segment-serve)\n", arch.c_str());
+        return 2;
+    }
+    if (segment_serve.empty() && !serve && (prompt.empty() || n_new < 1)) {
         std::fprintf(stderr, "strata (%s): needs --tokens and --max-new >= 1\n", arch.c_str());
         return 2;
     }
@@ -1088,6 +1152,19 @@ int plain_main(int argc, char** argv) {
             std::fprintf(stderr, "strata (%s): conversation cache sized from the free RAM: %lld MiB for up to %d parked "
                                  "conversations (--conversation-cache-mib N sets it, 0 turns it off)\n", arch.c_str(),
                          (long long) mib, cache.slots);
+    }
+    if (!segment_serve.empty()) {   // XeMaya: the model's last blocks, to the engine that holds the others
+        std::string host = "0.0.0.0";
+        int port = 0;
+        if (!strata::platform::net::split_host_port(segment_serve, host, port)) {
+            char* end = nullptr;
+            port = (int) std::strtol(segment_serve.c_str(), &end, 10);
+            if (*end != 0 || port < 0 || port > 65535) {
+                std::fprintf(stderr, "strata (%s): --segment-serve takes [HOST:]PORT\n", arch.c_str());
+                return 2;
+            }
+        }
+        return strata::core::plain_segment_serve(model, host, port, opt.remote_token, segment_state_mib);
     }
     if (serve)
         return plain_serve(model, opt, arch, eos.empty() ? eos_tokens(gguf) : eos, profile_save, save_min, cache);
