@@ -16,16 +16,15 @@ SPDX-License-Identifier: LGPL-3.0-or-later AND MIT
 [Install](#install) · [Models](#models) · [Recorded results](#status) · [Build](#building) ·
 [Model discovery](#model-discovery-and-serving) · [Documentation](DOCUMENTATION.md) · [Changelog](CHANGELOG.md)
 
-XeMaya is an Intel Arc-first inference engine for Qwen3.8-Flash-Next, GLM-5.3-Flash,
-DeepSeek-V4.1-Flash and experimental MiniMax-M3.1-Flash. It runs native SYCL / Level Zero kernels,
+XeMaya is an Intel Arc-first inference engine for Qwen3.8-Flash-Next, GLM-5.3-Flash and
+DeepSeek-V4.1-Flash. It runs native SYCL / Level Zero kernels,
 including Intel XMX paths, with multi-GPU layer splitting and VRAM / RAM / SSD expert tiers.
 The engine is built on XeStrata, rather than a llama.cpp server wrapper or a CUDA compatibility layer.
 
 > **Alpha (0.1.0-alpha.1, 2026-11-10): Linux, Intel Arc GPUs.** Reference agreement is limited to the
 > models, prompts and hardware recorded below; it does not establish production readiness. The release
 > binary was checked without a GPU (host tests, CPU-device kernel parity, a clean install); the GPU
-> results below come from development builds of earlier commits. One MiniMax run that held its experts
-> in RAM ended in a GPU engine reset of unknown cause. Read the [known limitations](INSTALL.md#known-limitations).
+> results below come from development builds of earlier commits. Read the [known limitations](INSTALL.md#known-limitations).
 
 ## Install
 
@@ -65,7 +64,9 @@ the correctness oracle in tests; it is not XeMaya's backend.
 | **Qwen3.8-Flash-Next** | Inherited XeStrata path; `qwen4exp` GGUF architecture | Benchmarked on B70 + B65; tools, reasoning and drafting advertised by the catalog. Direct-tier changes made later still need a fresh GPU check. |
 | **GLM-5.3-Flash** | `glm5-next`; setup lists Maya-S v2 / S24 / XS / M / L | Maya-S v2 checked on B70 + B65 + B60; 126/128 forced tokens on the chat-agent reference. A seven-turn tool session ran through the server. This is not validation of every listed quantisation. |
 | **DeepSeek-V4.1-Flash** | `deepseek41`; compressed attention, Engram, chunked prefill and XMX attention | Coder GSQ-RCO IQ2_XXS: 16/16 forced tokens on both saved references on three GPUs. Full 384-expert file previously generated on two GPUs, without reference comparison. The server reads the model's DSML tool calls (checked against a fake engine and golden prompts, not with the model); qualified thinking and drafting are absent from the catalog. |
-| **MiniMax-M3.1-Flash** | `minimax-m3`; sparse attention and SwiGLU-OAI; Maya-S IQ2_XXS | Experimental: 32/32 forced tokens for a 211-token chat prompt; 28/32 for a 3,832-token prompt. About 2–4 tok/s decode in recorded runs. Tools, vision and DSpark drafting are not implemented/qualified; no end-to-end server qualification. |
+
+MiniMax-M3.1-Flash is in the source and **held back from this release**: see
+[Experimental](#experimental-outside-this-releases-scope-2026-11-10-no-gpu-used).
 
 These are specific checked files and paths, not a promise that arbitrary GGUFs or all model variants work.
 The [catalog's family definitions](tools/xemaya/catalog.py) describe current advertised capabilities.
@@ -80,24 +81,26 @@ See [STATUS.md](xemaya/STATUS.md) for dates, settings, mismatches, incidents and
 | --- | ---: | ---: | --- |
 | GLM-5.3-Flash Maya-S v2, three GPUs, XMX attention, 2,377-token prompt (window 3) | 152–161 tok/s | 17.4 tok/s; 20.0 with MTP | 126/128 on the separate chat-agent reference; other prompts have larger differences. |
 | DeepSeek-V4.1-Flash Coder, three GPUs, direct expert tiers + XMX (window 6) | 207–209 tok/s at 576 tokens; 225 at 2,876 | 19.5–21.7 tok/s | 16/16 forced tokens on each of the 24- and 576-token references. |
-| MiniMax-M3.1-Flash Maya-S, three GPUs, mmap experts | 51–60 tok/s on the longer warm prompt | 2.2–2.3 tok/s on that prompt | Short chat: 32/32; longer chat: 28/32. CPU was shared with reference jobs. |
 | Qwen3.8-Flash-Next, B70 + B65, 26.8K prompt (window 4) | 1,842–1,884 tok/s; 1,989–1,996 with `STRATA_PREFILL_MMQ=0` | 76.6 / 57.1 tok/s (code / prose) | Behind Strata v0.2.12's 2,211 tok/s prefill and 78.3 / 59.2 decode in that comparison. |
 
 GLM's earlier llama.cpp SYCL baselines were 68.3 / 13.6 tok/s (stock) and 108.9 / 14.0
 (experimental grouped matmul), prefill / decode at 2,377 tokens. Results across different prompts,
 files, GPU counts or cold/warm states are not interchangeable; no general speed superiority is claimed.
 
-Recorded checks also include host tests, GLM / DeepSeek / MiniMax kernel parity, IQ-format parity,
+Recorded checks also include host tests, GLM / DeepSeek kernel parity, IQ-format parity,
 and the server suite (959 passed, 23 skipped on the development host at the release commit's tree; 938 passed,
 44 skipped in a clean Ubuntu 24.04 container). Later source changes have not
-all been rerun across every model, build mode or OS. Windows and free-mode qualification for the new
-MiniMax path remain unverified.
+all been rerun across every model, build mode or OS.
 
 ### Experimental, outside this release's scope (2026-11-10, no GPU used)
 
 - **Hybrid segment:** a model's last blocks can run in a segment worker on another machine
-  (`--segment-last` / `--segment-serve`). MiniMax-M3.1-Flash split over the loopback on the CPU device
-  matched the llama.cpp reference 32/32. Never run on GPUs or across two machines.
+  (`--segment-last` / `--segment-serve`). Checked on the CPU device over the loopback only (32/32 against
+  the llama.cpp reference); never run on GPUs or across two machines.
+- **MiniMax-M3.1-Flash** (`minimax-m3`; sparse attention, SwiGLU-OAI): held back from this release. On three
+  GPUs it matched its reference on a short chat prompt (32/32; 28/32 at 3,832 tokens) but decodes at 2–4 tok/s
+  because 30% of its experts do not fit in VRAM, and one run that held them in RAM ended in a GPU engine reset
+  of unknown cause. The catalog lists it only with `XEMAYA_UNRELEASED=1`; no tools, vision or drafting.
 - **Windows with the CUDA target:** the engine cross-compiles and links (`tools/xemaya/win_build.sh`);
   it has never been run on Windows. The first-run procedure is [xemaya/WINDOWS-FIRST-RUN.md](xemaya/WINDOWS-FIRST-RUN.md).
 - **DeepSeek-V4.1 tool calls:** the server reads the model's DSML call block (`serve/dsml.py`, from
@@ -115,7 +118,7 @@ cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DSTRATA_LICENSE=contrib -DXEMAYA_ALLOW_ICPX=ON \
   -DSTRATA_CUDA_ARCHS= -DSTRATA_HIP_ARCHS= \
   -DSTRATA_ENABLE_XE=ON -DSTRATA_NATIVE_EXPERTS=ON -DSTRATA_BUILD_TESTS=ON
-cmake --build build --target strata glm5_parity ds41_parity minimax_parity model_spec_test --parallel 4
+cmake --build build --target strata glm5_parity ds41_parity model_spec_test --parallel 4
 ```
 
 `CMakeLists.txt` accepts `icpx` through `XEMAYA_ALLOW_ICPX` (default ON); its build is Intel-only.
@@ -127,7 +130,6 @@ CPU-device kernel parity requires an installed OpenCL CPU device:
 ```bash
 ONEAPI_DEVICE_SELECTOR=opencl:cpu XEMAYA_CPU_DEVICE=1 build/glm5_parity
 ONEAPI_DEVICE_SELECTOR=opencl:cpu XEMAYA_CPU_DEVICE=1 build/ds41_parity
-ONEAPI_DEVICE_SELECTOR=opencl:cpu XEMAYA_CPU_DEVICE=1 build/minimax_parity
 ```
 
 The inherited setup/packaging workflow still uses the `xestrata` name and intel/llvm toolchain;
@@ -139,7 +141,7 @@ host tests and the CPU-device parity tests, and packs the release folder with it
 ## Model discovery and serving
 
 [`tools/xemaya/catalog.py`](tools/xemaya/catalog.py) scans local GGUF headers without loading a model
-or opening a GPU. It recognises `qwen4exp`, `glm5-next`, `deepseek41` and `minimax-m3`, groups split files
+or opening a GPU. It recognises `qwen4exp`, `glm5-next` and `deepseek41`, groups split files
 from their first shard, and emits JSON with model files, trained/default context, capability flags,
 qualification notes and engine arguments.
 
@@ -156,13 +158,13 @@ The catalog caps its default context at 32,768 tokens; that default is not a tes
 
 The inherited [`serve/server.py`](serve/server.py) exposes OpenAI- and Anthropic-compatible routes.
 Compatibility and model capabilities vary: GLM has a recorded tool session, DeepSeek's tool calls are read
-but were not exercised with the model, and MiniMax's end-to-end serving remains unverified. See the inherited
+but were not exercised with the model. See the inherited
 [API reference](docs/DETAILS.md#using-it) and the [documentation map](DOCUMENTATION.md).
 
 ## Roadmap
 
-1. Diagnose MiniMax's RAM-copy reset before resuming development GPU work.
-2. Improve MiniMax expert residency, sparse selection and prefill; qualify server/tools, then vision and DSpark.
+1. Recheck the release on more Arc hardware; fix what the first reports find.
+2. MiniMax-M3.1-Flash: diagnose the RAM-copy reset, improve expert residency and prefill, then release it.
 3. Recheck GLM and Qwen after the shared expert-tier changes; expand DeepSeek file and serving coverage.
 4. Continue selective Strata request-lifecycle fixes and test long-run stability across supported paths.
 

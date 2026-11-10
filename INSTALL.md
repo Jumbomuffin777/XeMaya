@@ -16,7 +16,7 @@ This is the guide to the release folder `xemaya-<version>-linux-x86_64.tar.xz`. 
 | System | Linux with glibc 2.38 or later (Ubuntu 24.04 and later, Fedora 40 and later) |
 | GPU runtime | Intel's compute runtime with Level Zero. Ubuntu: `sudo apt install intel-opencl-icd libze-intel-gpu1 libze1`. Fedora: `sudo dnf install intel-compute-runtime oneapi-level-zero`. Your user must be in the `render` group. |
 | Python | 3.10 or later, with `venv` (Ubuntu: `python3-venv`) |
-| A model | A GGUF of one of the four supported families: see the [model table](README.md#models) |
+| A model | A GGUF of one of the three supported families (Qwen3.8-Flash-Next, GLM-5.3-Flash, DeepSeek-V4.1-Flash): see the [model table](README.md#models) |
 
 Intel's SYCL and oneMKL run-time libraries (oneAPI 2026.2) are needed too and are **not** in the folder: `./xemaya.sh setup`
 installs them from PyPI into the folder's own `.venv` (Intel's `dpcpp-cpp-rt` and `onemkl-sycl-blas` wheels, under
@@ -34,7 +34,7 @@ cd xemaya-<version>
 ./xemaya.sh selftest        # seconds on the first GPU
 ```
 
-`./xemaya.sh selftest --cpu` runs the kernels' parity tests on the OpenCL CPU device instead: no GPU is opened.
+`./xemaya.sh selftest --cpu` runs the GLM and DeepSeek kernels' parity tests on the OpenCL CPU device instead: no GPU is opened.
 
 ## Run a model
 
@@ -62,8 +62,8 @@ folder and that directory: removing both removes XeMaya.
 - **This binary was checked without a GPU.** The release's programs passed the host tests and the kernels' parity
   tests on the OpenCL CPU device, and a clean install was checked in a container. The GPU results in the README were
   measured with development builds of earlier commits, with the same compiler.
-- **MiniMax-M3.1-Flash is experimental and slow**, and one run that held its experts in RAM (without
-  `--mmap-experts`) ended in a GPU engine reset whose cause is not known. Keep `--mmap-experts` for it.
+- **MiniMax-M3.1-Flash is not in this release.** Its code is in the source and it is held back: slow, and one
+  development run ended in a GPU engine reset whose cause is not known.
 - A GPU that shares its link with other devices can be starved by long expert streaming; watch `journalctl -k` on the
   first long runs.
 - Intel GPUs only in this release. The Windows build with the CUDA target and the hybrid segment (a model's last

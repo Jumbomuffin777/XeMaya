@@ -6,8 +6,8 @@
     catalog.py [--root DIR ...] [--configs DIR] [--engine EXE] [--write] [--tokenizers] [--pretty]
 
 Walks the roots (default: $XEMAYA_MODEL_ROOTS, a colon-separated list) for GGUF files (a split model's first shard),
-reads each header and keeps the architectures XeMaya's engine runs (`general.architecture`): glm5-next, deepseek41,
-qwen4exp and minimax-m3.  Nothing is loaded and no GPU is opened.
+reads each header and keeps the architectures XeMaya's engine runs (`general.architecture`): glm5-next, deepseek41
+and qwen4exp (and minimax-m3, held back from the releases, where XEMAYA_UNRELEASED=1 is set).  Nothing is loaded and no GPU is opened.
 
 Per model: its id, name, family, quantization, files and bytes, the context it was trained for, what the engine and
 the server do with it (tools, reasoning, vision, drafting), how far it is checked (`state`: "verified" against a
@@ -62,8 +62,12 @@ FAMILIES = {
         "reasoning": True, "vision": False, "draft": False,
         "note": "Experimental: correct on its chat template (32 of 32 forced tokens on three Arc cards) but slow "
                 "(2-4 tok/s decode): 30% of its experts do not fit in VRAM. No tool calls, vision or drafting yet.",
-        "args": ["--layer-split", "auto", "--mmap-experts", "--spec", "0"]},
+        "args": ["--layer-split", "auto", "--mmap-experts", "--spec", "0"], "unreleased": True},
 }
+# A family marked "unreleased" is in the source and not in a release: it is listed only where XEMAYA_UNRELEASED=1
+# is set (development).  MiniMax-M3.1 is held back from 0.1.0-alpha.1: slow, and one run ended in a GPU engine reset.
+if os.environ.get("XEMAYA_UNRELEASED") != "1":
+    FAMILIES = {k: v for k, v in FAMILIES.items() if not v.get("unreleased")}
 SHARD = re.compile(r"-(\d{5})-of-(\d{5})\.gguf$")
 
 

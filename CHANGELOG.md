@@ -10,13 +10,12 @@ The first public release: an alpha for **Linux and Intel Arc GPUs**. Built on Xe
 
 ### What is in it
 
-- The engine for four model families, each as far as its record goes ([README](README.md#models)):
-  Qwen3.8-Flash-Next (inherited from XeStrata), GLM-5.3-Flash, DeepSeek-V4.1-Flash, and MiniMax-M3.1-Flash
-  (experimental, slow). Layer split across several Arc GPUs, expert tiers in VRAM, RAM and on the drive,
-  XMX attention for GLM, DeepSeek and MiniMax.
+- The engine for three model families, each as far as its record goes ([README](README.md#models)):
+  Qwen3.8-Flash-Next (inherited from XeStrata), GLM-5.3-Flash and DeepSeek-V4.1-Flash. Layer split across several Arc GPUs, expert tiers in VRAM, RAM and on the drive,
+  XMX attention for GLM and DeepSeek.
 - The OpenAI- and Anthropic-compatible server, with newer Strata tool-calling and request-lifecycle fixes brought
   over, and DeepSeek-V4.1's DSML tool calls (read by the server; not exercised with the model).
-- `tools/xemaya/catalog.py`: finds local GGUFs of the four families and writes server configs and tokenizers.
+- `tools/xemaya/catalog.py`: finds local GGUFs of the three families and writes server configs and tokenizers.
 - A release folder for Linux (`tools/xemaya/release.sh`): the engine built with Intel oneAPI 2026.2, the
   `xemaya.sh` command (`setup`, `doctor`, `selftest`, `models`, `serve`), [INSTALL.md](INSTALL.md), checksums.
 - The engine says its XeMaya version beside XeStrata's (`strata --version`).
@@ -38,13 +37,13 @@ The first public release: an alpha for **Linux and Intel Arc GPUs**. Built on Xe
 - The hybrid segment (a model's last blocks in a worker on another machine): checked on the CPU device over the
   loopback only.
 - The Windows build with the CUDA target: cross-compiles and links; never run.
+- MiniMax-M3.1-Flash: in the source, held back from the release (the catalog lists it only with
+  `XEMAYA_UNRELEASED=1`). Slow, and one run with its experts held in RAM ended in a GPU engine reset of unknown cause.
 - NVIDIA and AMD GPUs, the free and contrib-llvm builds with intel/llvm, and the inherited deb/rpm packaging:
   not built or run by XeMaya.
 
 ### Known problems
 
-- One MiniMax-M3.1-Flash run with its experts held in RAM (without `--mmap-experts`) ended in a GPU engine reset;
-  the cause is not known.
 - After the shared expert-tier changes, the GLM-5.3 and Qwen3.8 forced-token checks were not rerun on GPUs.
 
 ## Documentation audit (2026-11-10)

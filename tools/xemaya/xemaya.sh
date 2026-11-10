@@ -85,7 +85,7 @@ is needed - Ubuntu: intel-opencl-icd and libze-intel-gpu1; Fedora: intel-compute
 selftest)
   runtime
   if [ "${1:-}" = --cpu ]; then
-    for t in glm5_parity ds41_parity minimax_parity; do
+    for t in glm5_parity ds41_parity; do
       echo "== $t (OpenCL CPU device)"
       ONEAPI_DEVICE_SELECTOR=opencl:cpu XEMAYA_CPU_DEVICE=1 "$here/engine/selftest/$t" || die "$t failed"
     done

@@ -76,7 +76,8 @@ echo "== the folder"
 dst=$work/$name
 mkdir -p "$dst/engine/lib" "$dst/engine/selftest"
 cp "$work/build/strata" "$work/build/strata-device" "$dst/engine/"
-cp "${parity[@]/#/$work/build/}" "$dst/engine/selftest/"
+# MiniMax-M3.1 is held back from the release: its parity test runs above and is not shipped
+cp "$work/build/glm5_parity" "$work/build/ds41_parity" "$dst/engine/selftest/"
 # oneMath and its oneMKL backend (Apache-2.0, built here from the fork CMake fetches): the real files, by soname
 for lib in "$work"/build/lib/libonemath*.so.[0-9]*; do cp "$lib" "$dst/engine/lib/"; done
 strip --strip-unneeded "$dst"/engine/strata "$dst"/engine/strata-device "$dst"/engine/selftest/* "$dst"/engine/lib/*
