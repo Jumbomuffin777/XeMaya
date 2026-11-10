@@ -94,6 +94,57 @@ CHATGLM4_PATTERN = (
     r"|\s+"
 )
 
+# XeMaya: `joyai-llm` (DeepSeek-V4.1-Flash): llama.cpp's LLAMA_VOCAB_PRE_TYPE_JOYAI_LLM (`src/llama-vocab.cpp` L329 at
+# master 8642541b2), DeepSeek-V3's shape: THREE regexes applied in turn, each splitting the pieces the one before
+# left (llama.cpp's unicode_regex_split keeps the text between matches as pieces of its own), so it is a tuple here.
+DEEPSEEK3_PATTERNS = (
+    r"\p{N}{1,3}",
+    r"[一-龥぀-ゟ゠-ヿ]+",
+    (r"[!\"#$%&'()*+,\-./:;<=>?@\[\\\]^_`{|}~][A-Za-z]+|[^\r\n\p{L}\p{P}\p{S}]?[\p{L}\p{M}]+"
+     r"| ?[\p{P}\p{S}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+"),
+)
+
+# XeMaya: `minimax-m2` (MiniMax-M3.1-Flash): llama.cpp's LLAMA_VOCAB_PRE_TYPE_MINIMAX_M2 (`src/llama-vocab.cpp` L448
+# at master 8642541b2), GPT-4o's shape.  This is the tokenizer.json regex llama.cpp quotes there; its own line spells
+# the case classes with lookaheads for std::regex, the same machine.
+MINIMAX_M2_PATTERN = (
+    r"[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]*[\p{Ll}\p{Lm}\p{Lo}\p{M}]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?"
+    r"|[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]+[\p{Ll}\p{Lm}\p{Lo}\p{M}]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?"
+    r"|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n/]*|\s*[\r\n]+|\s+(?!\S)|\s+"
+)
+
+
+class _SeqSplit:
+    """A pre-tokenizer of several regexes applied in turn (llama.cpp's unicode_regex_split over regex_exprs): each
+    splits every piece the one before left into its matches and the text between them.  `findall` as a compiled
+    pattern's, so the encoder takes either."""
+
+    def __init__(self, patterns):
+        self._pats = [regex.compile(p) for p in patterns]
+
+    def findall(self, text: str) -> list[str]:
+        pieces = [text] if text else []
+        for pat in self._pats:
+            out = []
+            for piece in pieces:
+                pos = 0
+                for m in pat.finditer(piece):
+                    if m.start() > pos:
+                        out.append(piece[pos:m.start()])
+                    if m.end() > m.start():
+                        out.append(m.group())
+                    pos = max(pos, m.end())
+                if pos < len(piece):
+                    out.append(piece[pos:])
+            pieces = out
+        return pieces
+
+
+def compile_pre(pattern):
+    """A PRE_TYPES pattern compiled: one regex, or a tuple of them applied in turn."""
+    return _SeqSplit(pattern) if isinstance(pattern, tuple) else regex.compile(pattern)
+
+
 # `hunyuanimage3` (HunyuanImage 3.0, the image model that reads its own prompt): the regex its HF
 # `tokenizer.json` carries is QWEN2's shape (`\p{N}` alone, no combining marks) - 20 probe strings split the same
 # way with the two patterns, measured 2026-10-24 - but the file sets `model.ignore_merges`, which `qwen2` does not.
@@ -109,6 +160,8 @@ PRE_TYPES = {
     "glm4": (CHATGLM4_PATTERN, True, "llama.cpp de7fa0a3 src/llama-vocab.cpp L406 (LLAMA_VOCAB_PRE_TYPE_CHATGLM4)"),
     "glm5": (CHATGLM4_PATTERN, True, "llama.cpp de7fa0a3 src/llama-vocab.cpp L406 (LLAMA_VOCAB_PRE_TYPE_CHATGLM4)"),
     HUNYUANIMAGE3_PRE: (QWEN2_PATTERN, True, "tencent/HunyuanImage-3.0*'s tokenizer.json, 2026-10-24"),
+    "joyai-llm": (DEEPSEEK3_PATTERNS, False, "llama.cpp 8642541b2 src/llama-vocab.cpp L329 (LLAMA_VOCAB_PRE_TYPE_JOYAI_LLM)"),
+    "minimax-m2": (MINIMAX_M2_PATTERN, False, "llama.cpp 8642541b2 src/llama-vocab.cpp L448 (LLAMA_VOCAB_PRE_TYPE_MINIMAX_M2)"),
 }
 
 # The strings a file's pre-tokenizer regex is compared against another shape's on: enough of the classes
@@ -148,7 +201,7 @@ class Tokenizer:
         if pre not in PRE_TYPES:
             raise ValueError("pre-tokenizer %r is not supported (%s)" % (pre, ", ".join(sorted(PRE_TYPES))))
         pattern, self.ignore_merges, _ = PRE_TYPES[pre]
-        self._re = regex.compile(pattern)
+        self._re = compile_pre(pattern)
 
         # The literals matched directly instead of being run through BPE.  GGUF token types: 3 = CONTROL,
         # 4 = USER_DEFINED.  The two classes behave DIFFERENTLY and llama.cpp's own tokenizer settled which:
@@ -234,7 +287,7 @@ class Tokenizer:
         for name, (pattern, im, _where) in PRE_TYPES.items():
             if im != ignore_merges:
                 continue
-            if all(theirs.findall(s) == regex.compile(pattern).findall(s) for s in _PRE_PROBES):
+            if all(theirs.findall(s) == compile_pre(pattern).findall(s) for s in _PRE_PROBES):
                 hits.append(name)
         if not hits:
             raise ValueError("tokenizer.json's pre-tokenizer is not a shape XeStrata knows (%s)" % regex_str[:80])
