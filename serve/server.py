@@ -4687,7 +4687,10 @@ class Service:
                 print(f"[strata] thinking capped at {max_new - reserve} of max_tokens {max_new} to leave room for "
                       f"the answer (budget {budget})", flush=True)
                 budget = max(1, max_new - reserve)
-        reader = GlmOutputParser if getattr(self.template, "call_form", "qwen") == "glm" else OutputParser
+        form = getattr(self.template, "call_form", "qwen")
+        reader = GlmOutputParser if form == "glm" else OutputParser
+        if form == "dsml":      # DeepSeek-V4.1's call block, rewritten as it streams into the form OutputParser reads
+            from serve.dsml import DsmlOutputParser as reader
         # #4663: a tool this conversation already called counts as declared (with_history_tools)
         parser = (HarmonyParser(thinking=thinking, tools=tools) if harmony else
                   reader(thinking=thinking, tools=with_history_tools(tools, sampling), stream_tools=True,
@@ -6037,6 +6040,8 @@ def openai_collect(chunks) -> dict:
         calls = [c for c in calls if c.get("type") == "custom"
                  or _is_json(c["function"]["arguments"])]   # a call the output ended inside (#211)
     msg: dict = {"role": "assistant", "content": "".join(content) or None}
+    if "".join(reasoning).strip() and "".join(reasoning).strip() == "".join(content).strip():
+        reasoning = []              # a turn with no </think> (serve/dsml.py): the text is the answer; it is not also reasoning
     if "".join(reasoning):
         msg["reasoning_content"] = msg["reasoning"] = "".join(reasoning)
     if calls:
@@ -6287,6 +6292,11 @@ def anthropic_collect(events) -> dict:
             if e.get("strata_rejected_tool_calls"):
                 msg["strata_rejected_tool_calls"] = e["strata_rejected_tool_calls"]
     assert msg is not None                          # anthropic_events always starts with message_start
+    for i in range(len(blocks) - 1):    # a turn with no </think> (serve/dsml.py): the text is the answer; it is not also a thinking block
+        a, b = blocks[i], blocks[i + 1]
+        if a.get("type") == "thinking" and b.get("type") == "text" and a.get("thinking", "").strip() == b.get("text", "").strip():
+            del blocks[i]
+            break
     msg["content"] = blocks
     return msg
 
@@ -8712,6 +8722,12 @@ MODEL_CARD_SAMPLING = {
 }
 
 
+def is_deepseek41(cfg: dict) -> bool:
+    """Whether a config's model is DeepSeek-V4.1 (its own chat template and DSML tool calls): the architecture the
+    config names, else the model's name."""
+    return (cfg.get("arch") or "") == "deepseek41" or str(cfg.get("model_name") or "").lower().startswith("deepseek-v4.1")
+
+
 def card_family(cfg: dict) -> str | None:
     """Which MODEL_CARD_SAMPLING set a config's model takes: Qwen3.8-Flash-Next and its variants (Swift, Gyro: upstream
     gives every qwen4exp file the set, "qwen4exp"), Qwen3.6-35B-A3B and Qwen3.5-9B ("qwen35moe"), HauhauCS's Qwen3.5-9B
@@ -8988,6 +9004,13 @@ def main() -> int:
     # the model's own chat template (exported with its tokenizer), else the original model's, which is under the Qwen
     # Community License and so in third_party/nonfree (XeStrata runs without that folder)
     tpl = tpath / "chat_template.jinja"
+    if is_deepseek41(cfg):
+        # the V4.1 model's own template; a pack that ships V4-Flash's (another spelling of the call block) gets this one
+        from serve import dsml
+        tpl, swapped = dsml.pick_template(tpl)
+        if swapped:
+            print("[strata] this pack's chat template spells the tool-call block differently from the V4.1 model's; "
+                  "using the V4.1 template so tool calls come back as real calls", flush=True)
     if not tpl.exists():
         tpl = ROOT / "third_party" / "nonfree" / "qwen3.8-flash-next" / "chat_template.jinja"
     if not tpl.exists():

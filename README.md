@@ -73,6 +73,16 @@ and the server suite (930 passed, 23 skipped at the recorded checkpoint). Later 
 all been rerun across every model, build mode or OS. Windows and free-mode qualification for the new
 MiniMax path remain unverified.
 
+### Since the audit (2026-11-10, no GPU used)
+
+- **Hybrid segment:** a model's last blocks can run in a segment worker on another machine
+  (`--segment-last` / `--segment-serve`). MiniMax-M3.1-Flash split over the loopback on the CPU device
+  matched the llama.cpp reference 32/32. Never run on GPUs or across two machines.
+- **Windows with the CUDA target:** the engine cross-compiles and links (`tools/xemaya/win_build.sh`);
+  it has never been run on Windows. The first-run procedure is [xemaya/WINDOWS-FIRST-RUN.md](xemaya/WINDOWS-FIRST-RUN.md).
+- **DeepSeek-V4.1 tool calls:** the server reads the model's DSML call block (`serve/dsml.py`, from
+  upstream Strata) through both APIs; checked against the fake engine and the golden prompts only.
+
 ## Building
 
 From the XeMaya checkout on Linux, with Intel oneAPI available:

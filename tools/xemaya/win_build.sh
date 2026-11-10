@@ -94,7 +94,8 @@ configure)
     ;;
 build)
     shift
-    inside ninja -C /work/build/engine "${@:-strata}"
+    if [ $# -eq 0 ]; then set -- strata strata-device; fi
+    inside ninja -C /work/build/engine "$@"
     ;;
 worker)
     # the folder a segment worker runs from: the engine, intel/llvm's SYCL runtime and oneMath with its cuBLAS backend
@@ -102,13 +103,13 @@ worker)
     # C++ runtime, are the PC's own.
     out=${2:?the folder to write}
     mkdir -p "$out"
-    cp "$work/build/engine/strata.exe" "$out/"
+    cp "$work/build/engine/strata.exe" "$work/build/engine/strata-device.exe" "$out/"
     for d in sycl9.dll ur_win_proxy_loader.dll ur_adapter_cuda.dll xptifw.dll; do
         cp "$src/.tools/intel-llvm-win/install/bin/$d" "$out/"
     done
     cp "$work/build/engine/bin/onemath.dll" "$work/build/engine/bin/onemath_blas_cublas.dll" "$out/"
-    (cd "$out" && sha256sum -- * > SHA256SUMS 2>/dev/null; grep -v ' SHA256SUMS$' SHA256SUMS > SHA256SUMS.new && mv SHA256SUMS.new SHA256SUMS)
     git -C "$src" rev-parse HEAD > "$out/COMMIT"
+    (cd "$out" && rm -f SHA256SUMS && sha256sum -- * > .sums && mv .sums SHA256SUMS)
     ls -l "$out"
     ;;
 run)

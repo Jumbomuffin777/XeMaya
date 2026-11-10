@@ -71,7 +71,8 @@ class ChatTemplate:
         self.wrapped_tools = re.search(r"tool\.function\b|tool\[['\"]function['\"]\]", self.source) is not None
         # GLM's templates (GLM-5.3-Flash): a call is `<tool_call>NAME<arg_key>K</arg_key><arg_value>V</arg_value>...
         # </tool_call>`, read through GlmCallRewriter; the thinking always opened, its effort low, high or max
-        self.call_form = "glm" if "<arg_key>" in self.source else "qwen"
+        # DeepSeek-V4.1's templates: a call is a `<｜DSML｜ calls>` block, read through serve/dsml.py's DsmlOutputParser
+        self.call_form = "glm" if "<arg_key>" in self.source else "dsml" if "｜DSML｜" in self.source else "qwen"
         self.caps = self._detect_caps()
         self.thinking = self._thinking_levels()
 
@@ -1270,6 +1271,9 @@ def forced_call(tool_choice, tools: list[dict] | None, form: str = "qwen") -> st
     "required" / Anthropic "any": any of the tools; a named function: that one.  "none" is handled by the caller
     (no tools).  A value it cannot honour (an unknown shape, a name that is not one of the tools, "required" with no
     tools) is a ValueError - a 400, as OpenAI and Anthropic answer it - not a request that runs as "auto"."""
+    if form == "dsml":      # DeepSeek-V4.1: the same opening in the model's own spelling (serve/dsml.py)
+        from serve import dsml
+        return dsml.to_dsml_force(forced_call(tool_choice, tools, "qwen"))
     kind, name = tool_choice_of(tool_choice)
     names = {t.get("name") for t in tools or [] if isinstance(t, dict)}
     if kind in ("auto", "none"):
