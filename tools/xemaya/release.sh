@@ -80,13 +80,16 @@ cp "$work/build/strata" "$work/build/strata-device" "$dst/engine/"
 cp "$work/build/glm5_parity" "$work/build/ds41_parity" "$dst/engine/selftest/"
 # oneMath and its oneMKL backend (Apache-2.0, built here from the fork CMake fetches): the real files, by soname
 for lib in "$work"/build/lib/libonemath*.so.[0-9]*; do cp "$lib" "$dst/engine/lib/"; done
-strip --strip-unneeded "$dst"/engine/strata "$dst"/engine/strata-device "$dst"/engine/selftest/* "$dst"/engine/lib/*
+# oneMath opens its backend by the name without a version (libonemath_blas_mklgpu.so): without it the engine's
+# matrix products fall back to its own kernels
+for lib in "$dst"/engine/lib/*.so.[0-9]*; do ln -s "$(basename "$lib")" "${lib%.so.*}.so"; done
+strip --strip-unneeded "$dst"/engine/strata "$dst"/engine/strata-device "$dst"/engine/selftest/* "$dst"/engine/lib/*.so.[0-9]*
 # the programs find oneMath beside them, wherever the folder is put; `xemaya.sh` adds Intel's libraries to the path
 # shellcheck disable=SC2016
 {
 patchelf --set-rpath '$ORIGIN/lib' "$dst/engine/strata" "$dst/engine/strata-device"
 patchelf --set-rpath '$ORIGIN/../lib' "$dst"/engine/selftest/*
-patchelf --set-rpath '$ORIGIN' "$dst"/engine/lib/*
+patchelf --set-rpath '$ORIGIN' "$dst"/engine/lib/*.so.[0-9]*
 }
 cp "$dst/tools/xemaya/xemaya.sh" "$dst/xemaya.sh"
 chmod +x "$dst/xemaya.sh"
