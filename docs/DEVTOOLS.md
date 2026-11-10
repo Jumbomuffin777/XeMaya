@@ -3,6 +3,11 @@ SPDX-FileCopyrightText: 2026 MistVVK and the XeStrata contributors
 SPDX-License-Identifier: LGPL-3.0-or-later
 -->
 # Developer tools
+
+> **Inherited XeStrata documentation.** For XeMaya's current model support, qualification limits and
+> direct oneAPI build, start with the [XeMaya documentation map](../DOCUMENTATION.md).
+> Upstream measurements and feature descriptions below are not fresh XeMaya validation.
+
 The tools a developer installs to lint, check and measure XeStrata.
 What building and running it needs is in [BUILD.md](BUILD.md#setup).
 Nothing here is needed to build, run or test the engine, and nothing here is bundled.

@@ -4,6 +4,11 @@ SPDX-License-Identifier: LGPL-3.0-or-later
 -->
 # Several GPUs (the layer split)
 
+> **Inherited XeStrata documentation.** For XeMaya's current model support, qualification limits and
+> direct oneAPI build, start with the [XeMaya documentation map](../DOCUMENTATION.md).
+> Upstream measurements and feature descriptions below are not fresh XeMaya validation.
+
+
 The model's layers can be spread over two or more GPUs in one PC.
 The first GPU runs the early layers, the next GPU the layers after them.
 Each GPU holds its own layers' dense weights (the PLE tensors on every GPU), their sessions (the GDN recurrent state, the QSA K/V) and an expert cache of its own.

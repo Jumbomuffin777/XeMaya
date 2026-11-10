@@ -4,8 +4,13 @@ SPDX-FileCopyrightText: 2026 MistVVK and the XeStrata contributors
 SPDX-License-Identifier: LGPL-3.0-or-later AND MIT
 -->
 # XeStrata - the details
+
+> **Inherited XeStrata documentation.** For XeMaya's current model support, qualification limits and
+> direct oneAPI build, start with the [XeMaya documentation map](../DOCUMENTATION.md).
+> Upstream measurements and feature descriptions below are not fresh XeMaya validation.
+
 The technical side of XeStrata: the measured speeds, which model to choose, setup's settings, the API, images and how the engine works.
-New here? Start with the [README](../README.md): it has everything you need to install and use it.
+New here? Start with the [XeStrata guide](XESTRATA.md): it has everything you need to install and use it.
 How the engine runs on Intel GPUs, and how that was checked, is in [XE.md](XE.md).
 This guide comes from XeStrata (its Japanese original is in the [XeStrata repository](https://github.com/MistVVK/XeStrata)).
 
@@ -505,10 +510,10 @@ setup's estimate of how much of a model the GPU holds is upstream's (its VRAM le
 
 ## What you need
 
-The GPU, CPU, RAM and disk are in the [README](../README.md#what-you-need).
+The GPU, CPU, RAM and disk are in the [README](XESTRATA.md#what-you-need).
 This adds only what the README leaves out.
 
-- **Packages**: with the deb and rpm packages ([README](../README.md#install)), apt or dnf installs what is needed.
+- **Packages**: with the deb and rpm packages ([README](XESTRATA.md#install)), apt or dnf installs what is needed.
   From the source, an Intel GPU needs its runtime (Level Zero), an AMD GPU ROCm (HIP, rocBLAS, hipBLASLt and others),
   an NVIDIA GPU its driver and the CUDA toolkit, and an Intel GPU in the default contrib-llvm build oneMKL.
   setup can build the SYCL compiler (intel/llvm).
@@ -1783,7 +1788,7 @@ On the B70, `cvec_parity` checks the control-vector kernel ([XE.md](XE.md#valida
 | `no access to the GPU` | Your user cannot open `/dev/dri/renderD*`: `sudo usermod -aG render $USER`, then log in again. |
 | `no access to the GPU's compute device (/dev/kfd)` | Your user cannot open `/dev/kfd`, which AMD GPUs compute through: `sudo usermod -aG render $USER`, then log in again. |
 | `... the engine needs an RDNA2 or later AMD GPU` | AMD GPUs older than RDNA2 do not run it. |
-| `... rocBLAS ... has no code for gfx...`, `... has no code for gfx...` | The distribution's rocBLAS (in a package, its engine) has no code for that GPU. On Ubuntu 26.04, it may run on Fedora 44 ([README](../README.md#amd-gpus)). |
+| `... rocBLAS ... has no code for gfx...`, `... has no code for gfx...` | The distribution's rocBLAS (in a package, its engine) has no code for that GPU. On Ubuntu 26.04, it may run on Fedora 44 ([README](XESTRATA.md#amd-gpus)). |
 | `building for the AMD GPU needs ROCm's ...` | ROCm's packages that build the AMD GPU's code are missing. Install the ones named and run setup again (see also `./setup.sh --packages`). |
 | `... has no HIP target (AMD GPUs)` | intel/llvm was built before ROCm was installed. Let setup build it again when it asks, or run `python3 tools/intel_llvm_build.py --rebuild`. |
 | `no progress for 60 s ... reading the prompt` on Linux, and the stall report says `threads in uninterruptible sleep (state D): 16 ...` (in `blk_io_schedule` and the like: waits for the drive) | The engine waits for the drive, not a deadlock: the n-gram table is read at random (`--ple-io direct`), which a rotational disk cannot keep up with (upstream #605). The engine warns at start when the table is on one; `--ple-io ram` (it needs RAM for the table) or the model on an SSD fixes it. Setup adds `--ple-io ram` itself on a rotational disk when the RAM holds the table (on Linux on an SSD too, when the RAM holds the model, the table and 16 GB more). |
@@ -1791,7 +1796,7 @@ On the B70, `cvec_parity` checks the control-vector kernel ([XE.md](XE.md#valida
 | `... gives this GPU no XMX` | The compiler gives the GPU no XMX; choose from setup's options. It runs without XMX, with prefill taking about 1.6 times as long ([BUILD.md](BUILD.md#the-sycl-compiler)). |
 | `no SYCL compiler for the engine` | There is no SYCL compiler: install the distribution's DPC++, or pass `--intel-llvm-build`. |
 | `alloc_device: ... refused` at start | A driver state that refuses device allocations while the VRAM is free (Intel's [compute-runtime #916](https://github.com/intel/compute-runtime/issues/916); compute-runtime 26.22 works around an xe kernel bug fixed in Linux 7.1 - on XeStrata's side, [#34](https://github.com/MistVVK/XeStrata/issues/34). On the B70 it happened 3 times in about 120 starts). The engine retries the allocation in pieces and starts with what it gets. While the card is in that state, only a reboot brings it back. On Ubuntu 24.04/26.04, update the driver from the [graphics PPA](BUILD.md#packages) ([XE.md](XE.md#the-output-heads-vram-refusal)). |
-| The start log says `IGC's GEP simplification is off` | Intel Graphics Compiler (IGC) 2.27 to 2.30 (Ubuntu 26.04's 2.28.4 among them) miscompile some reads for Xe2 and later GPUs (the Arc B-series, Lunar Lake, Panther Lake): the GPU reads past its buffer and stops, or the answers are wrong. On Linux, when the installed IGC is one of those and there is an Xe2 or later GPU, the engine sets `IGC_EnableGEPSimplification=0` when it starts, which turns that optimization off (on the B70 the decode of a 1K prompt is 5 to 10% slower, 32K the same). A value you set yourself, `IGC_EnableGEPSimplification=1`, is kept. For full speed, use Fedora 44 (its IGC is 2.32 or later), or [install with Podman](../README.md#podman) (Fedora 44 inside). On Ubuntu 24.04/26.04 there is also the way of moving to the HWE kernel with the [graphics PPA](BUILD.md#packages) (IGC alone cannot be updated: the PPA installs the driver with it, and that driver is for the HWE kernel). |
+| The start log says `IGC's GEP simplification is off` | Intel Graphics Compiler (IGC) 2.27 to 2.30 (Ubuntu 26.04's 2.28.4 among them) miscompile some reads for Xe2 and later GPUs (the Arc B-series, Lunar Lake, Panther Lake): the GPU reads past its buffer and stops, or the answers are wrong. On Linux, when the installed IGC is one of those and there is an Xe2 or later GPU, the engine sets `IGC_EnableGEPSimplification=0` when it starts, which turns that optimization off (on the B70 the decode of a 1K prompt is 5 to 10% slower, 32K the same). A value you set yourself, `IGC_EnableGEPSimplification=1`, is kept. For full speed, use Fedora 44 (its IGC is 2.32 or later), or [install with Podman](XESTRATA.md#podman) (Fedora 44 inside). On Ubuntu 24.04/26.04 there is also the way of moving to the HWE kernel with the [graphics PPA](BUILD.md#packages) (IGC alone cannot be updated: the PPA installs the driver with it, and that driver is for the HWE kernel). |
 | Python or the build tools could not be installed | Install what it names, then run it again. Everything already done is kept and skipped. |
 | `port 8095 is already in use` | XeStrata is already running (look for its window), or another program uses the port: `./setup.sh --port 8081`. |
 | The first start takes minutes | It is reading 23–50 GB into RAM; the second start is faster while the files are in the OS cache. |
