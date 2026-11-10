@@ -48,7 +48,7 @@ The first public release: an alpha for **Linux and Intel Arc GPUs**. Built on Xe
 
 ## Documentation audit (2026-11-10)
 
-Audited source: `b59488e2d5dc69337c3dc30664d26e1b7fe577bb`. This update changes documentation
+Audited source: `32c979a0a6de0c538e524ee4e8092577157f3a93`. This update changes documentation
 and funding metadata, not engine behaviour. Dates below refer to existing records, not new measurements.
 
 ### Updated

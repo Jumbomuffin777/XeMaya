@@ -1,6 +1,6 @@
 # XeMaya status
 
-> **Documentation audit, 2026-11-10 (source `b59488e2d`).** Read the latest handoff first. The dated
+> **Documentation audit, 2026-11-10 (source `32c979a0a`).** Read the latest handoff first. The dated
 > sections below retain historical checkpoints; their “not run”, “not started” and “unverified” statements
 > describe those checkpoints, not necessarily the current implementation. No GPU work was run for this audit.
 > The subsequent model catalog in `tools/xemaya/catalog.py` adds local GGUF discovery, config generation and
@@ -13,7 +13,7 @@ https://github.com/Jumbomuffin777/XeMaya. Every item below was run on the develo
 
 ## The hybrid segment and the front-end hooks (2026-11-10, after the handoff below; no GPU was used)
 
-Commit `9d091a92b`. A model's last blocks can run in a **segment worker** on another machine (a Windows PC
+Commit `0181d6adb`. A model's last blocks can run in a **segment worker** on another machine (a Windows PC
 with an RTX 4090 is the target), the boundary's rows over one TCP link. `docs` for the whole feature, with the
 front-end's side, the setup and the remaining work in order: FrontierUI's `docs/HYBRID.md`
 (branch `fable/visual-parity`).
@@ -67,7 +67,7 @@ front-end's side, the setup and the remaining work in order: FrontierUI's `docs/
   job at a time through `tools/xemaya/gpu_job.sh` (the lease, the safety guard, a memory cap, a time limit; it
   refuses while the production unit is active or the kernel log has a NIC, GPU, AER or OOM message). The B60 is
   named with `XEMAYA_GPUS=level_zero:0,1,2 XEMAYA_SLOW_LINK_GPUS=1`. No kernel message in any run of this session.
-- **DeepSeek-V4.1** (the section "Three GPUs for DeepSeek-V4.1" below): committed and pushed (`61bd5d654`); both
+- **DeepSeek-V4.1** (the section "Three GPUs for DeepSeek-V4.1" below): committed and pushed (`0cb5e668f`); both
   forced references 16 of 16 on B70 + B65 + B60 with the XMX attention, 207-225 tok/s prefill, 19.5-21.7 decode.
 - **MiniMax-M3.1-Flash Maya-S** (the section below): runs natively on the three cards, 32 of 32 on its chat-template
   reference. Slow so far (about 60 tok/s prefill, 2-4 tok/s decode): 30% of its experts do not fit in VRAM.
@@ -129,7 +129,7 @@ VRAM: B70 31.6 GB, B65 31.7 GB, B60 23.0 GB. The tier holds 4,608 of 7,296 exper
 B60's 9 layers whole). Each request read 95-198 GB from the model's files: the experts outside VRAM are read from the
 drive every time under `--mmap-experts`, and the CPU pool took 92% of the decode windows' time.
 
-## Three GPUs for DeepSeek-V4.1 (2026-11-10 04:30-06:12 UTC, commit `61bd5d654`)
+## Three GPUs for DeepSeek-V4.1 (2026-11-10 04:30-06:12 UTC, commit `0cb5e668f`)
 
 Coder GSQ-RCO IQ2_XXS on B70 + B65 + B60 (`--layer-split auto` with `XEMAYA_SLOW_LINK_GPUS=1`: blocks 0-13, 14-28,
 29-39, every expert in VRAM), greedy, forced along the llama.cpp v0.8.0 CPU references. Logs:
@@ -354,7 +354,7 @@ and `--vram-reserve-mib`: they ran with `--mmap-experts` (every expert was in VR
 |---|---|---|---|---|---|
 | Upstream Strata v0.2.12 (engine 0.1.58 SYCL, the production binary), `--spec 4` | 2,211 / 2,216 | 12.1 s | 78.3 (85% of drafts kept) | 59.2 (56%) | 83.9 / 58.7 |
 | XeStrata 0.2.2 (tag `xe0.2.2-1`, built here with icpx 2026.2), `--spec 4` | 1,859 / 1,876 | 14.4 s | 76.5 (83%) | 57.3 (53%) | 80.4 / 61.4 |
-| **XeMaya** (`f85353c17`), `--spec 4` | 1,842 / 1,884 | 14.6 s | 76.6 (83%) | 57.1 (53%) | 80.4 / 61.4 |
+| **XeMaya** (`b5bf12519`), `--spec 4` | 1,842 / 1,884 | 14.6 s | 76.6 (83%) | 57.1 (53%) | 80.4 / 61.4 |
 | **XeMaya**, `--spec 4`, `STRATA_PREFILL_MMQ=0` | **1,989 / 1,996** | 13.5 s | 70.1 (76%) | 60.9 (63%) | 80.2 / 61.7 |
 | Upstream Strata v0.2.12, `--spec 2` | 2,188 / 2,181 | 12.3 s | 67.3 | 58.1 | 68.8 / 59.5 |
 | XeStrata 0.2.2, `--spec 2` | 1,859 / 1,887 | 14.4 s | 67.6 | 59.3 | 68.9 / 62.0 |
@@ -374,7 +374,7 @@ and `--vram-reserve-mib`: they ran with `--mmap-experts` (every expert was in VR
   the B65) loses to FP16 everywhere at 8K chunks (+7%); 4K and 16K chunks do not help (1,844-1,872, 1,783-1,803).
 - **Where it loses the decode:** the verify window costs the same (32.09 ms on both); XeMaya's draft step is 4.4 ms
   against 3.1 ms. Fixed on the way: the 2-bit draft head was never built for this file's Q6_K head (the engine's
-  split row order had no host dequantizer, `f85353c17`); built, it measured slower here (214 vs 185 us a step) and
+  split row order had no host dequantizer, `b5bf12519`); built, it measured slower here (214 vs 185 us a step) and
   the engine keeps the whole head, so the decode did not change. The remaining gap is the draft layer itself.
 - The router's label for production still says `strata-0.2.11-sycl`; the installed release is v0.2.12
   (`DEPLOYMENT-v0.2.12.json`, engine sha256 223c2440...). Not changed (the router's config is the owner's).

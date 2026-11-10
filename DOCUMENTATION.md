@@ -5,7 +5,7 @@ SPDX-License-Identifier: LGPL-3.0-or-later
 # XeMaya documentation
 
 Start with the [README](README.md) for the current model matrix, build entry point and limitations.
-This documentation was audited against source snapshot `b59488e2d5dc69337c3dc30664d26e1b7fe577bb`.
+This documentation was audited against source snapshot `32c979a0a6de0c538e524ee4e8092577157f3a93`.
 
 | Need | Read | Scope |
 | --- | --- | --- |
