@@ -1,5 +1,13 @@
 # XeMaya status
 
+> **Documentation audit, 2026-11-10 (source `b59488e2d`).** Read the latest handoff first. The dated
+> sections below retain historical checkpoints; their “not run”, “not started” and “unverified” statements
+> describe those checkpoints, not necessarily the current implementation. No GPU work was run for this audit.
+> The subsequent model catalog in `tools/xemaya/catalog.py` adds local GGUF discovery, config generation and
+> DeepSeek/MiniMax tokenizer support. Template/tokenizer checks do not qualify MiniMax's end-to-end serve path.
+> The reset stop in the latest handoff remains unresolved. See [CHANGELOG](../CHANGELOG.md) for audit evidence.
+
+
 Updated 2026-11-10 12:30 UTC (MiniMax-M3.1-Flash runs on the three Arc cards; the handoff is the next section).
 https://github.com/Jumbomuffin777/XeMaya. Every item below was run on Zability unless marked otherwise.
 
