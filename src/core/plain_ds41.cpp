@@ -24,6 +24,7 @@
 // stages each window's positions, visible-row counts and Engram table rows, so one recorded graph a window size serves
 // every position.  The prompt runs in windows for now (no chunked path yet); the model has no MTP layer.
 #include "strata/core/plain_model.hpp"
+#include "plain_ds41_rope.hpp"
 
 #include "strata/artifact/gguf_reader.hpp"
 #include "strata/core/runtime.hpp"
@@ -42,6 +43,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <type_traits>
@@ -64,24 +66,6 @@ bool mapped(size_t bytes, void** h, void** d) {
 
 /// A projection's GGUF type before the engine's row order (the byte count of its rows)
 int file_type(int t) { return t == k::kNativeQ6KRows ? kQ6K : t == k::kNativeQ8Rows ? kQ80 : t; }
-
-/// The layer's rotation (deepseek41.cpp: a compressed layer takes the compressed base and the YaRN scaling), over the
-/// last rope_dims of a row of `dim`
-k::Ds41Rope rope_of(const ModelSpec& s, int64_t l, int64_t dim) {
-    k::Ds41Rope r;
-    r.n_rot = (int) (s.rope_dims > 0 ? s.rope_dims : 64);
-    r.offset = (int) (dim - r.n_rot);
-    const bool c = s.compress_ratios[(size_t) l] != 0;
-    const bool yarn = s.rope_scaling_type == "yarn";
-    r.freq_base = (float) (c ? s.compress_rope_base : s.rope_base);
-    r.freq_scale = c && yarn && s.rope_scaling_factor > 0 ? (float) (1.0 / s.rope_scaling_factor) : 1.0f;
-    r.ext_factor = c && yarn ? 1.0f : 0.0f;
-    r.attn_factor = r.ext_factor == 0.0f ? 1.0f : 1.0f / (1.0f + 0.1f * std::log(1.0f / r.freq_scale));
-    r.beta_fast = c ? 32.0f : 0.0f;
-    r.beta_slow = c ? 1.0f : 0.0f;
-    r.n_ctx_orig = c ? (int) s.rope_scaling_orig_ctx : 0;
-    return r;
-}
 
 /// y [T][n_out] = w x for an F32 matrix, 8 rows a launch (f32_gemv_fp32_mmvf_multi's limit)
 void f32_rows(const float* x, int64_t n_in, const float* w, float* y, int64_t n_out, int T, void* cs) {
@@ -175,8 +159,16 @@ bool PlainModel::load_ds41(std::string& err) {
         err = "plain model: a DeepSeek-V4.1-Flash shape this engine's kernels are not built for";
         return false;
     }
-    // the prompt in windows (no chunked path yet), no drafts
-    opt_.prompt_chunk = 0;
+    // the prompt in chunks (plain_prompt_ds41.cpp) of at most kDsChunk tokens: the rings, the scores and the
+    // attention's rows grow with the chunk.  XEMAYA_DS41_PROMPT=windows: through the decode windows.  No drafts
+    {
+        constexpr int64_t kDsChunk = 1024;
+        const char* v = std::getenv("XEMAYA_DS41_PROMPT");
+        const char* c = std::getenv("XEMAYA_DS41_CHUNK");
+        const int64_t cap = c != nullptr && std::atoll(c) >= 16 ? std::atoll(c) : kDsChunk;
+        opt_.prompt_chunk = v != nullptr && std::strcmp(v, "windows") == 0 ? 0 : std::min<int64_t>(opt_.prompt_chunk, cap);
+        opt_.prompt_chunk_given = true;   // no longer chunk is chosen (auto_prompt_chunk)
+    }
     opt_.spec = 0;
     model_mtp_ = false;
     has_mtp_ = false;
@@ -275,7 +267,7 @@ bool PlainModel::load_ds41(std::string& err) {
 
     // the per-sequence state
     const int64_t cells = opt_.max_cells, MT = opt_.max_t;
-    d_ring_ = WIN + MT;
+    d_ring_ = WIN + std::max<int64_t>(MT, opt_.prompt_chunk);
     d_raw_.assign((size_t) L, nullptr);
     d_cstate_.assign((size_t) L, nullptr);
     d_comp_.assign((size_t) L, nullptr);
@@ -370,9 +362,10 @@ bool PlainModel::load_ds41(std::string& err) {
             n_idx += s.compress_ratios[(size_t) l] && s.topk_src[(size_t) l] == l;
         }
         std::fprintf(stderr, "strata plain: DeepSeek-V4.1-Flash, %lld blocks (%lld KV-source, %lld top-k source), %lld "
-                             "experts, %zu Engram layers, window %lld, %lld cells; the prompt in windows of %d\n",
+                             "experts, %zu Engram layers, window %lld, %lld cells; the prompt in %s of %lld\n",
                      (long long) L, (long long) n_kv, (long long) n_idx, (long long) E, s.engram_layers.size(),
-                     (long long) WIN, (long long) cells, opt_.max_t);
+                     (long long) WIN, (long long) cells, opt_.prompt_chunk > 0 ? "chunks" : "windows",
+                     (long long) (opt_.prompt_chunk > 0 ? opt_.prompt_chunk : opt_.max_t));
     }
     return true;
 }
@@ -404,11 +397,44 @@ bool PlainModel::reset_ds41(std::string& err) {
     return ok;
 }
 
+void PlainModel::ds41_meta(int64_t pos, int64_t T, int64_t stride, int32_t* meta) const {
+    const ModelSpec& s = spec_;
+    const int64_t bs = std::max<int64_t>(1, s.cand_block_size);
+    const int64_t cand_ratio = s.cand_src >= 0 ? s.compress_ratios[(size_t) s.cand_src] : 0;
+    for (int64_t t = 0; t < T; ++t) {
+        const int64_t p = pos + t;
+        meta[t] = (int32_t) p;
+        for (size_t ri = 0; ri < d_ratios_.size(); ++ri) {
+            const int64_t r = d_ratios_[ri];
+            meta[(1 + 2 * (int64_t) ri) * stride + t] = (int32_t) ((p + 1) / r);
+            meta[(2 + 2 * (int64_t) ri) * stride + t] = (int32_t) std::max<int64_t>(0, p - r + 1);
+        }
+        meta[(1 + 2 * kDsRatios) * stride + t] = cand_ratio > 0 ? (int32_t) (((p + 1) / cand_ratio + bs - 1) / bs) : 0;
+    }
+}
+
+bool PlainModel::ds41_engram_rows(int64_t e, int64_t p, float* dst) const {
+    const ModelSpec& s = spec_;
+    const int64_t NH = s.engram_n_heads, HD = s.engram_head_dim, ng = s.engram_ngram;
+    int32_t rows[64], prev[16] = {};
+    if (NH > 64 || ng > 16 || ng < 2) return false;
+    for (int64_t i = 0; i < ng - 1; ++i) {   // oldest first; a position before 0 is not read
+        const int64_t q = p - (ng - 1) + i;
+        prev[i] = q >= 0 ? h_dtok_[q] : 0;
+    }
+    k::ds41_engram_hash(h_dtok_[p], prev, p, s.engram_token_map, (int32_t) s.engram_pad_id, (int) ng,
+                        (int) s.engram_heads_per_ngram, s.engram_multipliers.data() + e * ng,
+                        s.engram_vocab.data() + e * NH, s.engram_offsets.data() + e * NH, rows);
+    for (int64_t c = 0; c < NH; ++c)
+        if (rows[c] < 0 || (uint64_t) rows[c] >= d_eng_rows_n_ ||
+            !k::cpu::native_row_to_float(d_eng_type_, d_eng_tab_ + (size_t) rows[c] * d_eng_row_, dst + c * HD, HD))
+            return false;
+    return true;
+}
+
 bool PlainModel::stage_ds41(const int32_t* tokens, int T, int64_t pos, std::string& err, bool emb) {
     const ModelSpec& s = spec_;
     const int64_t N = s.n_embd, MT = opt_.max_t;
-    const int64_t bs = std::max<int64_t>(1, s.cand_block_size);
-    const int64_t cand_ratio = s.cand_src >= 0 ? s.compress_ratios[(size_t) s.cand_src] : 0;
     for (int t = 0; t < T; ++t) {
         const int64_t p = pos + t;
         if (tokens[t] < 0 || tokens[t] >= n_vocab_) { err = "plain model: a token is out of the vocabulary"; return false; }
@@ -417,39 +443,17 @@ bool PlainModel::stage_ds41(const int32_t* tokens, int T, int64_t pos, std::stri
             return false;
         }
         h_dtok_[p] = tokens[t];
-        h_dmeta_[t] = (int32_t) p;
-        for (size_t ri = 0; ri < d_ratios_.size(); ++ri) {
-            const int64_t r = d_ratios_[ri];
-            h_dmeta_[(1 + 2 * (int64_t) ri) * MT + t] = (int32_t) ((p + 1) / r);
-            h_dmeta_[(2 + 2 * (int64_t) ri) * MT + t] = (int32_t) std::max<int64_t>(0, p - r + 1);
-        }
-        h_dmeta_[(1 + 2 * kDsRatios) * MT + t] = cand_ratio > 0 ? (int32_t) (((p + 1) / cand_ratio + bs - 1) / bs) : 0;
     }
+    ds41_meta(pos, T, MT, h_dmeta_);
     // Engram: each token's n-gram hashes (the tokens before it from the sequence so far), their table rows dequantized
-    const int64_t NH = s.engram_n_heads, HD = s.engram_head_dim, ng = s.engram_ngram;
-    for (size_t j = 0; j < d_eng_local_.size(); ++j) {
-        const int64_t e = dblocks_[(size_t) d_eng_local_[j]].eng;
-        int32_t rows[64], prev[16] = {};
-        if (NH > 64 || ng > 16) { err = "plain model: an Engram shape this block is not built for"; return false; }
-        for (int t = 0; t < T; ++t) {
-            const int64_t p = pos + t;
-            for (int64_t i = 0; i < ng - 1; ++i) {   // oldest first; a position before 0 is not read
-                const int64_t q = p - (ng - 1) + i;
-                prev[i] = q >= 0 ? h_dtok_[q] : 0;
+    const int64_t RW = s.engram_n_heads * s.engram_head_dim;
+    for (size_t j = 0; j < d_eng_local_.size(); ++j)
+        for (int t = 0; t < T; ++t)
+            if (!ds41_engram_rows(dblocks_[(size_t) d_eng_local_[j]].eng, pos + t,
+                                  h_deng_ + ((size_t) j * (size_t) MT + (size_t) t) * (size_t) RW)) {
+                err = "plain model: an Engram table row could not be read";
+                return false;
             }
-            k::ds41_engram_hash(tokens[t], prev, p, s.engram_token_map, (int32_t) s.engram_pad_id, (int) ng,
-                                (int) s.engram_heads_per_ngram, s.engram_multipliers.data() + e * ng,
-                                s.engram_vocab.data() + e * NH, s.engram_offsets.data() + e * NH, rows);
-            float* dst = h_deng_ + ((size_t) j * (size_t) MT + (size_t) t) * (size_t) (NH * HD);
-            for (int64_t c = 0; c < NH; ++c) {
-                if (rows[c] < 0 || (uint64_t) rows[c] >= d_eng_rows_n_ ||
-                    !k::cpu::native_row_to_float(d_eng_type_, d_eng_tab_ + (size_t) rows[c] * d_eng_row_, dst + c * HD, HD)) {
-                    err = "plain model: an Engram table row could not be read";
-                    return false;
-                }
-            }
-        }
-    }
     return true;
 }
 
@@ -458,7 +462,7 @@ void PlainModel::record_dattn(const DBlock& b, int64_t l, int T, strata::gpu::St
     const int64_t N = s.n_embd, H = s.n_head, D = s.key_length, QL = s.q_lora_rank, G = s.o_group_count,
                   OL = s.o_lora_rank, ID = s.idx_key_length, IH = s.idx_n_head, MT = opt_.max_t, GI = H * D / G;
     const float eps = (float) s.rms_eps;
-    const k::Ds41Rope r = rope_of(s, l, D), ri = rope_of(s, l, ID);
+    const k::Ds41Rope r = ds41_layer_rope(s, l, D), ri = ds41_layer_rope(s, l, ID);
     const int32_t* pos = d_meta_;
     const int32_t *nvis = nullptr, *bpos = nullptr;
     if (b.ratio > 0) {

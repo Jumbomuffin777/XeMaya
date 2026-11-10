@@ -185,7 +185,16 @@ VRAM while loaded: B70 31.6 GB, B65 31.5 GB. Load 6 s (Coder). Decode does not s
   cache; the tier's slots are filled a window at a time, 5,592 swaps), with the host answering a ring in 22 ms.
   Filling the tier at load from a saved profile (`--profile`, as Qwen's) is the cold-TTFT lever.
 
-**Next:** the chunked prompt path for DeepSeek (plain_prompt_ds41.cpp, after plain_prompt_glm5.cpp); a tier profile at
+**Since the window (CPU only, 2026-11-10 04:05 UTC): the chunked prompt path is written** (`src/prefill/plain_prompt_ds41.cpp`,
+chunks of up to 1,024 tokens; `XEMAYA_DS41_PROMPT=windows` gives the old path, `XEMAYA_DS41_CHUNK=N` the chunk). On the
+OpenCL CPU device, one stage, forced along the llama.cpp references: 24-token prompt 16 of 16 (median 0.007, max 0.073),
+576-token prompt 16 of 16 (median 0.015, max 0.099), so the chunk's compressor, candidate blocks, top-k and Engram
+agree with the windows'. **Unverified: on an Arc GPU, and the two-GPU hand-off of the streams and the lagging pre**
+(the CPU device runs one stage). The CPU device's profile of 576 tokens (not GPU timings): the experts 60%, the
+attention and its output 23%, the projections 7%. For the CPU device `event_record` now marks with a barrier where a
+device has no profiling tags.
+
+**Next:** a GPU window for the chunked path (forced checks on B70 + B65, then prefill speed and its profile); a tier profile at
 load; a llama.cpp reference for the full model and longer prompts; then decode (fewer host round trips).
 
 ## GPU window 4: Qwen3.8 Flash-Next on three engines, DeepSeek-V4.1 (2026-11-09 21:28-22:50 UTC)

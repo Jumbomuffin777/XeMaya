@@ -281,7 +281,7 @@ bool PlainModel::prompt_warm_products(std::string& err) {
     // A library's first product of a kind loads its kernels for it, inside whichever prompt comes first (rocBLAS on
     // the RX 9060 XT: 0.5 s for the first product, 0.9 s more for the first of 32 rows): each dense shape the prompt
     // takes, once, on a chunk of zeros into the buffers the prompt overwrites.
-    if (glm_) return true;   // GLM-5.3-Flash's first prompt loads its products' kernels itself
+    if (glm_ || ds_) return true;   // GLM-5.3-Flash's first prompt loads its products' kernels itself
     PromptBufs& P = pb_;
     prefill::Gemm& gm = prompt_gemm().gemm;
     const int64_t T = P.T, HV = spec_.ssm_dt_rank;
@@ -877,6 +877,7 @@ bool PlainModel::prompt_one(const int32_t* tokens, int64_t n, int64_t pos, int32
 
 bool PlainModel::prompt_chunks(const int32_t* tokens, int64_t n, int64_t pos, int32_t* out, float* logits,
                                std::string& err, int64_t c_begin, int64_t c_end, const float* hand_in) {
+    if (ds_) return prompt_chunks_ds41(tokens, n, pos, out, logits, err, c_begin, c_end, hand_in);   // XeMaya
     if (glm_) return prompt_chunks_glm5(tokens, n, pos, out, logits, err, c_begin, c_end, hand_in);
     PromptBufs& P = pb_;
     const ModelSpec& s = spec_;

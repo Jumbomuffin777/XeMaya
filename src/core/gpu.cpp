@@ -529,8 +529,10 @@ bool event_record(Event* e, Stream s) {
     // an event without timing is a barrier where the runtime measured timestamps to slow the waits (measure_marks)
     try {
         auto& queue = q(s);
-        e->ev = e->timing || !rt_of(s).marks_by_barrier() ? sx::submit_profiling_tag(queue)
-                                                          : queue.ext_oneapi_submit_barrier();
+        // XeMaya: a device without profiling tags (the OpenCL CPU device) marks with a barrier
+        const bool tags = queue.get_device().has(sycl::aspect::ext_oneapi_queue_profiling_tag);
+        e->ev = tags && (e->timing || !rt_of(s).marks_by_barrier()) ? sx::submit_profiling_tag(queue)
+                                                                    : queue.ext_oneapi_submit_barrier();
         return true;
     }
     catch (const std::exception& ex) { return fail("event_record", ex); }

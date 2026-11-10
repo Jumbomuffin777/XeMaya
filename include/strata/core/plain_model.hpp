@@ -472,6 +472,15 @@ private:
               *g_ik = nullptr, *g_ig = nullptr, *g_iw = nullptr, *g_scores = nullptr;
         int32_t* g_ids = nullptr;
         float *g_ffg = nullptr, *g_ffu = nullptr;
+        // XeMaya: DeepSeek-V4.1-Flash's (plain_prompt_ds41.cpp); the queries, the attention and its transpose are
+        // qcur, attn and attn32, the low-rank and indexer rows GLM's g_qa, g_qr, g_iq, g_ik, g_ig (raw key), g_iw
+        float *d_pre[3] = {nullptr, nullptr, nullptr};
+        float *d_kvr = nullptr, *d_kv = nullptr, *d_cv = nullptr, *d_cg = nullptr, *d_lat = nullptr, *d_scores = nullptr,
+              *d_bmax = nullptr, *d_oaT = nullptr, *d_oa = nullptr, *d_engr = nullptr, *d_engkv = nullptr;
+        int32_t *d_meta = nullptr, *d_ids = nullptr, *d_cnt = nullptr, *d_cand = nullptr, *d_ncand = nullptr;
+        int32_t* h_meta = nullptr;         ///< pinned host: stage_ds41's records, T ints each
+        float* h_eng = nullptr;            ///< pinned host: per Engram layer of the stage, T rows of table rows
+        float* h_one = nullptr;            ///< pinned host: (1, 0, 0, 0) a token
     };
     /// Device buffers in pieces of at most max_alloc_bytes() (a chunk's buffers may take more than a device allots at
     /// once: the RX 9060 XT's HIP adapter allots 1 GiB): each piece's bytes and, once allocated, where it lies.
@@ -633,6 +642,14 @@ private:
     bool reset_ds41(std::string& err);
     /// stage() for DeepSeek-V4.1: the embeddings, the positions' records (d_meta_'s layout), the Engram rows
     bool stage_ds41(const int32_t* tokens, int T, int64_t pos, std::string& err, bool emb);
+    /// The positions' records of T tokens from `pos` into `meta` (kDsMeta arrays of `stride` ints: d_meta_'s layout)
+    void ds41_meta(int64_t pos, int64_t T, int64_t stride, int32_t* meta) const;
+    /// Engram module `e`'s table rows of the token at position p (h_dtok_ holds the tokens up to it) into `dst`
+    /// (engram_n_heads rows of engram_head_dim floats); false when a row cannot be read
+    bool ds41_engram_rows(int64_t e, int64_t p, float* dst) const;
+    bool prompt_chunks_ds41(const int32_t* tokens, int64_t n, int64_t pos, int32_t* out, float* logits,
+                            std::string& err, int64_t c_begin, int64_t c_end, const float* hand_in);
+    int64_t hand_cap_ = 0;   ///< the rows hand_host_ was allocated for (the lagging pre's rows lie after them)
     bool record_window_ds41(int T, strata::gpu::Stream cs, std::string& err);
     void record_dattn(const DBlock& b, int64_t l, int T, strata::gpu::Stream cs);
     bool record_dmoe(const DBlock& b, int64_t ml, int T, uint32_t& ring, std::vector<strata::gpu::Graph*>& segs,

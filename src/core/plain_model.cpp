@@ -921,6 +921,8 @@ void PlainModel::prompt_carve(int64_t T, PromptBufs& b, uint8_t* dev, uint8_t* h
     // GLM-5.3-Flash's widest inputs: the four streams (the mHC's mixes), the MLA's output, the dense FFN's down, KDA's
     const uint64_t gw = glm_ ? std::max<uint64_t>({4 * N, NH * (uint64_t) s.value_length_mla, (uint64_t) s.n_ff,
                                                    NH * (uint64_t) s.kda_head_dim})
+                             : ds_ ? std::max<uint64_t>({4 * N, (uint64_t) (s.o_group_count * s.o_lora_rank),
+                                                         (uint64_t) (s.engram_n_heads * s.engram_head_dim)})   // XeMaya
                              : 0;
     const uint64_t max_in = std::max<uint64_t>({N, ZV, NH * HD, FS, FF, has_mtp_ ? 2 * N : 0, gw});
     b.T = T;
@@ -939,6 +941,9 @@ void PlainModel::prompt_carve(int64_t T, PromptBufs& b, uint8_t* dev, uint8_t* h
     for (const GBlock& g : gblocks_)
         for (const W* w : {&g.hc_attn_fn, &g.hc_ffn_fn, &g.q, &g.k, &g.v, &g.f_a, &g.f_b, &g.beta, &g.g_a, &g.g_b, &g.q_a,
                            &g.q_b, &g.kv_a, &g.idx_q_b, &g.idx_k, &g.idx_gate, &g.o, &g.ffn_gate, &g.ffn_up, &g.ffn_down})
+            b.gemm_elems = std::max<int64_t>(b.gemm_elems, (int64_t) w->n_in * w->n_out);
+    for (const DBlock& d : dblocks_)   // XeMaya: DeepSeek-V4.1-Flash's
+        for (const W* w : {&d.q_a, &d.q_b, &d.kv, &d.o_b, &d.eng_kv, &d.ffn_gate, &d.ffn_up, &d.ffn_down})
             b.gemm_elems = std::max<int64_t>(b.gemm_elems, (int64_t) w->n_in * w->n_out);
     b.gemm_elems = std::min<int64_t>(b.gemm_elems, (int64_t) 1 << 25);
     uint64_t at = 0, in = 0;   // in: the bytes taken in piece pi
@@ -1034,6 +1039,25 @@ void PlainModel::prompt_carve(int64_t T, PromptBufs& b, uint8_t* dev, uint8_t* h
         take(b.g_scores, U * blocks * 4); take(b.g_ids, U * cap * 4);
         take(b.g_ffg, U * FW * 4); take(b.g_ffu, U * FW * 4);
     }
+    if (ds_) {   // XeMaya: plain_prompt_ds41.cpp
+        const uint64_t HC = 4, MIX = (2 + HC) * HC, D = HD, QLR = (uint64_t) s.q_lora_rank;
+        const uint64_t IH = (uint64_t) s.idx_n_head, ID = (uint64_t) s.idx_key_length;
+        const uint64_t GO = (uint64_t) (s.o_group_count * s.o_lora_rank);
+        const uint64_t RW = (uint64_t) std::max<int64_t>(1, s.engram_n_heads * s.engram_head_dim);
+        take(b.g_hs, U * HC * N * 4); take(b.g_mixes, U * MIX * 4); take(b.g_post, U * HC * 4);
+        take(b.g_comb, U * HC * HC * 4); take(b.g_y, U * N * 4);
+        for (float*& p : b.d_pre) take(p, U * HC * 4);
+        take(b.g_qa, U * QLR * 4); take(b.g_qr, U * QLR * 4);
+        for (float** p : {&b.d_kvr, &b.d_kv, &b.d_cv, &b.d_cg, &b.d_lat}) take(*p, U * D * 4);
+        take(b.g_iq, U * IH * ID * 4); take(b.g_ik, U * ID * 4); take(b.g_ig, U * ID * 4); take(b.g_iw, U * IH * 4);
+        take(b.d_scores, U * (uint64_t) d_score_stride_ * 4); take(b.d_bmax, U * (uint64_t) d_blk_stride_ * 4);
+        take(b.d_ids, U * (uint64_t) std::max<int64_t>(1, s.idx_top_k) * 4); take(b.d_cnt, U * 4);
+        take(b.d_cand, U * (uint64_t) std::max<int64_t>(1, s.cand_topk_blocks) * 4); take(b.d_ncand, U * 4);
+        take(b.d_oaT, U * GO * 4); take(b.d_oa, U * GO * 4);
+        take(b.d_engr, U * RW * 4); take(b.d_engkv, U * N * (HC + 1) * 4);
+        take(b.d_meta, U * (uint64_t) kDsMeta * 4);
+        take(b.g_ffg, U * FS * 4); take(b.g_ffu, U * FS * 4);
+    }
     dev_bytes = at;
     at = 0;
     auto hold = [&](auto*& ptr, uint64_t bytes) {
@@ -1047,6 +1071,12 @@ void PlainModel::prompt_carve(int64_t T, PromptBufs& b, uint8_t* dev, uint8_t* h
     hold(b.h_hn, U * N * 4); hold(b.h_cpu, (uint64_t) b.cpu_cap * N * 4); hold(b.h_cpu_row, (uint64_t) b.cpu_cap * 4);
     hold(b.h_nact, U * k::cpu::kNativeActBytes); hold(b.h_dense_bounds, 2 * sizeof(int32_t));
     hold(b.h_stage, 2 * (uint64_t) PromptBufs::kGroup * lay.max_blob);
+    if (ds_) {   // XeMaya
+        hold(b.h_meta, U * (uint64_t) kDsMeta * 4);
+        hold(b.h_eng, (uint64_t) std::max<size_t>(1, d_eng_local_.size()) * U *
+                          (uint64_t) std::max<int64_t>(1, s.engram_n_heads * s.engram_head_dim) * 4);
+        hold(b.h_one, U * 4 * 4);
+    }
     host_bytes = at;
 }
 
@@ -1186,6 +1216,7 @@ bool PlainModel::open_experts(std::string& err) {
             strata::gpu::free(prompt_host_);
             prompt_host_ = nullptr;
         }
+        hand_cap_ = asked;
         if (prompt_host_ == nullptr) {
             std::fprintf(stderr, "strata plain: no pinned memory for the prompt path's chunks (%lld tokens asked): "
                                  "prompts are read through the decode windows\n", (long long) asked);

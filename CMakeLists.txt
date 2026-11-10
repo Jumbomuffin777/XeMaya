@@ -703,7 +703,8 @@ if(STRATA_ENABLE_XE)
   # expert products on the decode kernels' DP4a dots ran at 0.34x and 0.25x of it on the B70 and were dropped.
   add_library(strata_prefill STATIC src/prefill/gemm.cpp src/prefill/kernels.cpp src/prefill/gdn_tc.cpp
                                     src/prefill/prefill.cpp src/prefill/moe_mmq.cpp src/prefill/plain_prompt.cpp
-                                    src/prefill/plain_prompt_glm5.cpp)
+                                    src/prefill/plain_prompt_glm5.cpp
+                                    src/prefill/plain_prompt_ds41.cpp)
   target_include_directories(strata_prefill PUBLIC include)
   target_link_libraries(strata_prefill PUBLIC strata_engine)
   # mmq::swiglu_quantize writes the bytes kernels::iq_mmq_quantize writes, and swiglu feeds both: the same
