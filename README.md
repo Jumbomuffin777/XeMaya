@@ -23,7 +23,8 @@ The engine is built on XeStrata, rather than a llama.cpp server wrapper or a CUD
 
 > **Alpha (0.1.0-alpha.1, 2026-11-10): Linux, Intel Arc GPUs.** Reference agreement is limited to the
 > models, prompts and hardware recorded below; it does not establish production readiness. The release
-> binary was checked without a GPU (host tests, CPU-device kernel parity, a clean install); the GPU
+> build passed its host tests, CPU-device kernel parity and clean installs, and its release candidate
+> matched the DeepSeek-V4.1 reference on three Arc cards (16/16 on both prompts); the other GPU
 > results below come from development builds of earlier commits. Read the [known limitations](INSTALL.md#known-limitations).
 
 ## Install

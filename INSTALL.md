@@ -59,9 +59,10 @@ folder and that directory: removing both removes XeMaya.
 
 - **Alpha.** Reference agreement is recorded for specific files, prompts and GPUs only ([README](README.md#status),
   [STATUS](xemaya/STATUS.md)). Expect rough edges; report them with the file, the settings and the hardware.
-- **This binary was checked without a GPU.** The release's programs passed the host tests and the kernels' parity
-  tests on the OpenCL CPU device, and a clean install was checked in a container. The GPU results in the README were
-  measured with development builds of earlier commits, with the same compiler.
+- **What this binary was checked on.** The release build passed the host tests and the kernels' parity tests on the
+  OpenCL CPU device, and clean installs in Ubuntu 24.04, Ubuntu 26.04 and Fedora 44 containers. On GPUs,
+  the release candidate built from the parent commit (the same source but for these documents), installed from its archive with the PyPI run-time, ran DeepSeek-V4.1-Flash Coder IQ2_XXS on Arc Pro B70 + B65 + B60 and matched the llama.cpp reference at 16 of 16 forced tokens on both saved prompts. GLM-5.3 and Qwen3.8 were not run with the release build: their results in the README were measured
+  with development builds of earlier commits, with the same compiler.
 - **MiniMax-M3.1-Flash is not in this release.** Its code is in the source and it is held back: slow, and one
   development run ended in a GPU engine reset whose cause is not known.
 - A GPU that shares its link with other devices can be starved by long expert streaming; watch `journalctl -k` on the

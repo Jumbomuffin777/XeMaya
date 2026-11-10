@@ -28,8 +28,11 @@ The first public release: an alpha for **Linux and Intel Arc GPUs**. Built on Xe
   libraries resolve, the three CPU-device parity tests pass, the server answers against its mock engine.
 - The server suite: 959 passed, 23 skipped on the development host; 938 passed, 44 skipped in a clean
   Ubuntu 24.04 container.
-- GPU results (the README's table) are records of 2026-11-09 and 2026-11-10 made with development builds of
-  earlier commits on Arc Pro B70 + B65 + B60. They were not rerun with the release binary.
+- On GPUs (2026-11-10): the release candidate built from the parent commit (the same source but for these documents), installed from its archive with the PyPI run-time, ran DeepSeek-V4.1-Flash Coder IQ2_XXS on Arc Pro B70 + B65 + B60 and matched the llama.cpp reference at 16 of 16 forced tokens on both saved prompts (median |d logprob| 0.009 and 0.010, as the development build; first prompt after the
+  load 128 tok/s at 576 tokens, decode 15.6-16.1 tok/s; no kernel message). That check found the release folder
+  lacking oneMath's backend under the name oneMath opens, which is fixed.
+- The other GPU results (the README's table) are records of 2026-11-09 and 2026-11-10 made with development builds
+  of earlier commits on Arc Pro B70 + B65 + B60. GLM-5.3 and Qwen3.8 were not rerun with the release build.
 - Licences: `reuse lint` passes; gitleaks finds nothing in XeMaya's own commits.
 
 ### Experimental, not part of this release's support

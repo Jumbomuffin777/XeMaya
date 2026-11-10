@@ -11,6 +11,27 @@
 Updated 2026-11-10 (the hybrid segment, checked on the CPU device; then the handoff of 12:30 UTC: MiniMax-M3.1-Flash on the three Arc cards).
 https://github.com/Jumbomuffin777/XeMaya. Every item below was run on the development host unless marked otherwise.
 
+## Release 0.1.0-alpha.1 (2026-11-10 evening; read this first)
+
+The first public release, Linux and Intel Arc: `tools/xemaya/release.sh` builds it from a commit, `xemaya.sh` is its
+command, [INSTALL.md](../INSTALL.md) its guide, [CHANGELOG](../CHANGELOG.md) what was checked.
+
+- **Decisions of the owner (2026-11-10):** the release is an alpha for Linux and Intel Arc; Windows with CUDA and the
+  hybrid segment are experimental and outside it; **MiniMax-M3.1-Flash is held back** (the catalog lists it only with
+  `XEMAYA_UNRELEASED=1`, which the development host sets: `LOCAL.md`); the authors' fields of XeMaya's own commits
+  were rewritten to the maintainer's GitHub identity before publication (content, messages and dates unchanged;
+  the hashes cited below are the present ones), and the history before it is kept in a private archive repository.
+- **Checked:** the release build's 13 host tests and three CPU-device parity tests; clean installs in Ubuntu 24.04,
+  Ubuntu 26.04 and Fedora 44 containers without a GPU; serve 959 passed, 23 skipped; reuse lint, license_class,
+  gitleaks over XeMaya's commits. **On GPUs** (the owner allowed one short check): the release candidate, installed
+  from its archive with the PyPI run-time, DeepSeek-V4.1 Coder IQ2_XXS on B70 + B65 + B60 through `gpu_job.sh`:
+  16 of 16 on both references (median 0.009 / 0.010, max 0.096 / 0.155), load 37 s, 576-token first prompt
+  128 tok/s, decode 15.6-16.1 tok/s, no kernel message. Logs: `<work>/logs/release-rc2/`.
+- **Unverified:** GLM-5.3 and Qwen3.8 with the release build; any GPU but the three Arc Pro cards; the free and
+  contrib-llvm modes with intel/llvm (the release is built with icpx); Windows.
+- The stop on other GPU work in the handoff below still holds (the MiniMax reset is not diagnosed).
+- The scripts in `tools/xemaya/` take the host's folders from the environment (`LOCAL.md` has the exports).
+
 ## The hybrid segment and the front-end hooks (2026-11-10, after the handoff below; no GPU was used)
 
 Commit `0181d6adb`. A model's last blocks can run in a **segment worker** on another machine (a Windows PC
