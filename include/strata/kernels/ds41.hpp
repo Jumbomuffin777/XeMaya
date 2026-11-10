@@ -103,6 +103,19 @@ void ds41_sink_attn(const float* q, const float* raw, int64_t ring, const int32_
                     int64_t comp_stride, const int32_t* ids, const int32_t* count, int64_t id_cap, const float* sinks,
                     float scale, int n_heads, int dim, int64_t n_tokens, float* out, void* stream);
 
+/// XeMaya: ds41_sink_attn on Xe's matrix engines (src/kernels/xe/ds41_attn_xmx.cpp): a token and 16 heads a
+/// work-group, the rows gathered 16 at a time into local memory as FP16 K and V, q and p as FP16 hi + lo.  The same
+/// arguments; the result differs from ds41_sink_attn's by the rows' rounding to FP16.  Returns false, launching
+/// nothing, where the device has no FP16 XMX or too little local memory, or dim is not 512 or n_heads not a multiple
+/// of 16 (the caller keeps ds41_sink_attn).
+bool ds41_sink_attn_xmx(const float* q, const float* raw, int64_t ring, const int32_t* pos, int window,
+                        const float* comp, int64_t comp_stride, const int32_t* ids, const int32_t* count,
+                        int64_t id_cap, const float* sinks, float scale, int n_heads, int dim, int64_t n_tokens,
+                        float* out, void* stream);
+/// Where PlainModel takes ds41_sink_attn_xmx, XEMAYA_DS41_ATTN: 2 (unset or xmx) the prompt chunks and the decode
+/// windows, 1 (prompt) the prompt chunks, 0 (ref, or anything else) nowhere.
+int ds41_attn_mode();
+
 // ---- the per-sequence state, in device buffers a recorded graph replays at any position (the host fills `pos`)
 
 /// The window's raw KV rows into the ring: raw[pos[t] % ring] = kv[t].  kv [T][D], raw [ring][D], ring >= T.

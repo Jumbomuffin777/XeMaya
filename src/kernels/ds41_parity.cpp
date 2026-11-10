@@ -9,6 +9,7 @@
 // Runs on any SYCL device the engine accepts; on a host whose GPUs are leased:
 //   ONEAPI_DEVICE_SELECTOR=opencl:cpu XEMAYA_CPU_DEVICE=1 ds41_parity
 #include "strata/kernels/ds41.hpp"
+#include "strata/kernels/f16_bits.hpp"
 
 #include "parity_device.hpp"
 
@@ -506,6 +507,59 @@ int test_sink_attn() {
     return compare("MQA + sinks (window ring, selected rows)", out, r, 1e-5);
 }
 
+// ---- the same on the matrix engines: against the reference over the rows rounded to FP16 (the kernel's K and V),
+// and against the FP32 kernel's result (the rounding's size).  Skipped where the device has no FP16 XMX.
+int test_sink_attn_xmx() {
+    strata::parity::Device dev;
+    const int T = 5, H = 32, D = 512, W = 128, R = 160, NC = 700, STRIDE = 640, CAP = 512;
+    auto q = randn((size_t) T * H * D, 0.05f), raw = randn((size_t) R * D), comp = randn((size_t) NC * STRIDE);
+    auto sinks = randn(H, 1.0f);
+    sinks[3] = 9.0f;     // a sink above every key
+    sinks[5] = -30.0f;   // and one far below
+    const std::vector<int32_t> pos = {0, 50, 1000, 127, 4000};
+    std::vector<int32_t> ids((size_t) T * CAP), cnt = {0, 10, CAP, 17, 300};
+    for (int t = 0; t < T; ++t)
+        for (int i = 0; i < CAP; ++i) ids[(size_t) (t * CAP + i)] = (i * 37 + t) % NC;
+    const float scale = 1.0f / std::sqrt((float) D);
+    std::vector<float> out((size_t) T * H * D), ref32(out.size());
+    float *dout = dev.alloc<float>(out.size()), *dref = dev.alloc<float>(out.size());
+    const float *dq = dev.upload(q), *draw = dev.upload(raw), *dcomp = dev.upload(comp), *dsinks = dev.upload(sinks);
+    const int32_t *dpos = dev.upload(pos), *dids = dev.upload(ids), *dcnt = dev.upload(cnt);
+    if (!K::ds41_sink_attn_xmx(dq, draw, R, dpos, W, dcomp, STRIDE, dids, dcnt, CAP, dsinks, scale, H, D, T, dout,
+                               nullptr)) {
+        std::printf("  %-66s skipped (no FP16 matrix engine)\n", "MQA + sinks on the matrix engines");
+        return 0;
+    }
+    K::ds41_sink_attn(dq, draw, R, dpos, W, dcomp, STRIDE, dids, dcnt, CAP, dsinks, scale, H, D, T, dref, nullptr);
+    copy_out(out.data(), dout, out.size());
+    copy_out(ref32.data(), dref, ref32.size());
+    auto h16 = [](float x) { return (double) strata::kernels::f32_from_f16(strata::kernels::f16_from_f32(x)); };
+    std::vector<double> r(out.size()), r32(ref32.begin(), ref32.end());
+    for (int t = 0; t < T; ++t)
+        for (int h = 0; h < H; ++h) {
+            std::vector<const float*> keys;
+            for (int p = std::max(0, pos[(size_t) t] - W + 1); p <= pos[(size_t) t]; ++p) keys.push_back(&raw[(size_t) ((p % R) * D)]);
+            for (int i = 0; i < cnt[(size_t) t]; ++i) keys.push_back(&comp[(size_t) (ids[(size_t) (t * CAP + i)] * STRIDE)]);
+            std::vector<double> l(keys.size());
+            double m = sinks[(size_t) h];
+            for (size_t j = 0; j < keys.size(); ++j) {
+                double dot = 0;
+                for (int d = 0; d < D; ++d) dot += (double) q[(size_t) ((t * H + h) * D + d)] * h16(keys[j][d]);
+                l[j] = dot * scale;
+                m = std::max(m, l[j]);
+            }
+            double sum = std::exp(sinks[(size_t) h] - m);
+            for (auto& v : l) sum += (v = std::exp(v - m));
+            for (int d = 0; d < D; ++d) {
+                double acc = 0;
+                for (size_t j = 0; j < keys.size(); ++j) acc += l[j] * h16(keys[j][d]);
+                r[(size_t) ((t * H + h) * D + d)] = acc / sum;
+            }
+        }
+    return compare("MQA + sinks on the matrix engines (FP16 rows)", out, r, 2e-5) +
+           compare("  ... against the FP32 kernel (the rows' rounding)", out, r32, 2e-3);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -516,7 +570,7 @@ int main(int argc, char** argv) {
         }
     std::printf("ds41_parity: DeepSeek-V4.1-Flash's kernels against host references\n");
     const int bad = test_router() + test_hc() + test_compress() + test_engram() + test_engram_hash() + test_rope() +
-                    test_indexer() + test_sink_attn() + test_state();
+                    test_indexer() + test_sink_attn() + test_sink_attn_xmx() + test_state();
     std::printf("%s\n", bad ? "FAIL" : "PASS");
     return bad ? 1 : 0;
 }
