@@ -38,6 +38,31 @@ command, [INSTALL.md](../INSTALL.md) its guide, [CHANGELOG](../CHANGELOG.md) wha
 - The stop on other GPU work in the handoff below still holds (the MiniMax reset is not diagnosed).
 - The scripts in `tools/xemaya/` take the host's folders from the environment (`LOCAL.md` has the exports).
 
+## Regular DeepSeek-V4.1-Flash (384 experts), two vs three GPUs, speed only (2026-11-10 22:44-22:58 UTC)
+
+The owner asked for speeds only: **no reference comparison was run**, so these are not correctness results and are
+separate from the Coder (192-expert) results above. Build: the published `0.1.0-alpha.1` release build, not rebuilt.
+Model: DeepSeek-V4.1-Flash-1017-GSQ-RCO IQ2_XXS, the regular 384-expert file (129 GB), its shards and Engram file on a
+PCIe Gen 3 NVMe SSD (8 GT/s x4). Each run through `gpu_job.sh` (lease, safety guard): status 0, no kernel message.
+Full tables: [benchmarks/2026-11-10-ds41-flash-384](benchmarks/2026-11-10-ds41-flash-384/README.md). Logs:
+`<work>/logs/ds41-flash-speed/`, `<work>/logs/ds41-flash-3gpu/`.
+
+| 576-token prompt, 1,024-token decode | Prefill | Decode | Experts hit | Swaps |
+| --- | ---: | ---: | ---: | ---: |
+| B70 + B65 (`--layer-split auto` default) | 11.4 tok/s | **14.56 tok/s** | 93.7% | 8,056 |
+| B70 + B65 + B60 (`XEMAYA_SLOW_LINK_GPUS=1`; blocks 0-16 / 17-33 / 34-39) | 11.2 tok/s | **11.58 tok/s** | 94.2% | 9,797 |
+
+- **Why two GPUs win:** the B60's six fully resident blocks raise the hit rate by only 0.5 points (the most-routed
+  experts already fit on two cards), while its blocks add ~17.6 ms a token (~68.7 vs ~86.3 ms): the B60's own
+  execution plus the hand-off over its chipset link (7.0 GB/s); the logs do not separate those two. The CPU pool takes
+  56-58% of the decode windows in both. Prefill (~11.3 tok/s) does not depend on the GPU count.
+- 127-token runs, cold and warm: 10.55 / 10.60 tok/s on two GPUs, 9.76 / 9.72 on three; load 4.9-6.6 s (experts are
+  read on first use, inside the prompt). Peak VRAM 59.1 GiB (two GPUs) and 80.7 GiB (three; the B60 21.7); engine RSS
+  15.6-17.0 GiB.
+- **XMX:** the engine reports XeStrata's XMX kernels and int8 XMX experts (oneMKL for the prompt's matrix products).
+  DeepSeek's XMX attention is the default and was not disabled, but the engine does not log the attention path:
+  **unverified**.
+
 ## The hybrid segment and the front-end hooks (2026-11-10, after the handoff below; no GPU was used)
 
 Commit `0181d6adb`. A model's last blocks can run in a **segment worker** on another machine (a Windows PC
