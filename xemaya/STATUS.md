@@ -130,10 +130,9 @@ NVMe during the prompt.
 - **DeepSeek-V4.1 is the main line.** Done and pushed: `src/reference/ds41_host.cpp` (the whole model on the host, the
   oracle), `src/core/plain_ds41.cpp` (the block in PlainModel), the state kernels in `ds41.hpp`, IQ1_M down rows.
   Checked: see the table below. **Next, in order:**
-  1. the 576-token prompt on the OpenCL CPU device (`/DATA/Projects/xemaya/logs/ds41-cpu/run-long.sh mid`, started
-     2026-11-10 00:45 UTC; result in `logs/ds41-cpu/mid.compare.txt`): it is the first run of the engine's top-k and
-     candidate blocks (more than 512 compressed rows);
-  2. in a GPU window: `ds41_parity` again, then the Coder file on B70 + B65 forced along
+  1. (done 2026-11-10 00:55 UTC) the 576-token prompt on the OpenCL CPU device passes: the engine's top-k and
+     candidate blocks agree with llama.cpp (table below; `logs/ds41-cpu/run-long.sh mid`);
+  2. in a GPU window (`tools/xemaya/window5_ds41.sh`, prepared, refuses without an open window): `ds41_parity` again, then the Coder file on B70 + B65 forced along
      `xemaya/reference/ds41-coder-{short,mid}.json` (`--spec-follow`, `--dump-logits`, `compare_ref.py --forced`),
      then prefill / decode / TTFT / VRAM residency; GLM's forced check again (the checkpoint loop was regrouped);
   3. the chunked prompt path (the prompt runs in decode windows of 8 now: correct, slow), then the full 384-expert
@@ -192,7 +191,7 @@ table 110 GB IQ4_NL):
 | the same, 576-token prompt (compressed rows past the top-k of 512, candidate blocks) | 16 of 16, median 0.011, max 0.043 |
 | `ds41_parity` with the new state kernels (ring store, block positions, streaming compressor, cache store), B70 and B65 | PASS on both |
 | The engine's block (`plain_ds41.cpp`) on the OpenCL CPU device, Coder, 24-token prompt, forced | 16 of 16, median 0.007, max 0.134 |
-| The engine's block, 576-token prompt, CPU device | running at the time of writing (see the handoff) |
+| The engine's block, 576-token prompt (compressed rows past the top-k, candidate blocks), CPU device | 16 of 16, median 0.009, max 0.062 |
 | On an Arc GPU | **not run yet** (the block was finished after the window closed) |
 
 Tensor types of the Coder file and the engine's kernels: Q8_0 and Q5_K projections (native_mmvq), BF16 compressor,
