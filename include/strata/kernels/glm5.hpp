@@ -156,7 +156,7 @@ void glm5_latent_gather(const uint16_t* latent, const int32_t* ids, int64_t cap,
                         int64_t n_tokens, int tail_kpool, int64_t stride, uint16_t* out, void* stream);
 
 /// GLM's clamped SwiGLU (ggml_swiglu_clamp): out = silu(min(gate, limit)) clamp(up, -limit, limit), n values.
-/// `out` may be `gate` or `up`.
+/// `out` may be `gate` or `up`.  XeMaya: a limit below 0 is swiglu-oai at the limit -limit (swiglu_clamp.hpp).
 void glm5_swiglu_clamp(const float* gate, const float* up, float* out, int64_t n, float limit, void* stream);
 
 }  // namespace strata::kernels

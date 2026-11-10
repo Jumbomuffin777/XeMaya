@@ -11,6 +11,7 @@
 // index modulo the row's 8 or 4 lanes), and the lane sums are added as the GPU's butterfly (j += j ^ o, o = 4 .. 1).
 // These rows take the same steps, so a row is the same bits wherever it ran; the integer sums are exact in any order,
 // so the CPU keeps a down activation's values in the order its rows decode the weights (act_pos).
+#include "strata/kernels/swiglu_clamp.hpp"
 #include "strata/kernels/cpu/canon_expert.hpp"
 
 #include "strata/kernels/canon_math.hpp"
@@ -385,6 +386,10 @@ void canon_gu_rows(const NativeFmt& f, const uint8_t* blob, const void* const* a
             iq256_canon_rows(f.gu_type, blob, f.gu_row, n, x, dx, nt, g, c0, c1);
             iq256_canon_rows(up_type, blob + f.up_off, up_row, n, x, dx, nt, u, c0, c1);
         }
+        // the experts' SwiGLU limit or swiglu-oai (swiglu_clamp.hpp; GLM-5.3-Flash's, MiniMax-M3's): the pair first
+        if (const float lim = expert_swiglu_limit(); lim != 0.0f)
+            for (int t = 0; t < nt; ++t)
+                for (int r = c0; r < c1; ++r) swiglu_clamp(g[t][r], u[t][r], lim);
         for (int t = 0; t < nt; ++t) {
             int r = c0;
             for (; r + 8 <= c1; r += 8)

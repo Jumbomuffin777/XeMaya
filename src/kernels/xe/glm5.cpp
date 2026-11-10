@@ -9,6 +9,7 @@
 #include "strata/kernels/glm5.hpp"
 #include "strata/kernels/f16_bits.hpp"
 #include "strata/kernels/qsa.hpp"
+#include "strata/kernels/swiglu_clamp.hpp"
 #include "strata/core/runtime.hpp"
 #define STRATA_DEVICE_ARCH_TAG_TU xe_glm5
 #include "strata/kernels/device_arch_tag.hpp"
@@ -714,8 +715,12 @@ void glm5_swiglu_clamp(const float* gate, const float* up, float* out, int64_t n
     if (n <= 0) return;
     const auto event = queue_for(stream).parallel_for(sycl::range<1>((size_t) n), [=](sycl::id<1> id) {
         const size_t i = id[0];
-        const float gv = sycl::fmin(gate[i], limit);
-        const float uv = sycl::clamp(up[i], -limit, limit);
+        float gv = sycl::fmin(gate[i], limit), uv = sycl::clamp(up[i], -limit, limit);
+        if (limit < 0.0f) {   // XeMaya: swiglu-oai at the limit -limit (swiglu_clamp.hpp), MiniMax-M3's
+            gv = gate[i];
+            uv = up[i];
+            swiglu_clamp(gv, uv, limit);
+        }
         out[i] = gv / (1.0f + sycl::exp(-gv)) * uv;
     });
     sync_if_needed(stream, event, "glm5_swiglu_clamp");
