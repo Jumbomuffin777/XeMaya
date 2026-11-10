@@ -5,6 +5,18 @@ https://github.com/Jumbomuffin777/XeMaya. Every item below was run on Zability u
 
 ## Handoff: where the work stands (2026-11-10 12:30 UTC, read this first)
 
+- **GPU work is stopped: a GPU engine reset at 12:07:39 UTC (the owner decides whether it goes on).**
+  `xe 0000:08:00.0: Fault response: Unsuccessful -EBUSY`, then `Engine reset: engine_class=bcs` (the card's copy
+  engine), 16 s into the first request of a MiniMax run started for the first time **without `--mmap-experts`** (the
+  experts outside VRAM in RAM: 26.29 GiB, 1,877 experts; three cards; `logs/mm-gpu/w2-warm.*`). No process had been
+  signalled before it. `safety_guard.sh` stopped the job at once (exit 99); afterwards the three cards were idle
+  (42 MB used each), the lease free, the gateway answering, no NIC watchdog, AER or OOM message, RAM 83 GiB available.
+  The eight MiniMax runs before it, all with `--mmap-experts`, logged nothing. **Not established:** the cause. What
+  differs in that run is the copies from the pinned RAM copy to the cards (the adaptive tier's exchanges, on the copy
+  engine); whether a copy's address or length was wrong, or the driver refused a page of registered memory, the logs
+  do not say. Until the owner says otherwise: no GPU job; and when it goes on, `--mmap-experts` stays on for MiniMax
+  and the RAM copy is tried first on one card with a short request.
+
 - **Operations.** Production Qwen (`zability-strata-qwen38.service`) is stopped and masked by the owner: leave it off,
   do not restore it. The Sonnet supervisor, Hermes and Pi stay parked. GPU work is authorized on B70 + B65 + B60, one
   job at a time through `tools/xemaya/gpu_job.sh` (the lease, the safety guard, a memory cap, a time limit; it
@@ -15,8 +27,9 @@ https://github.com/Jumbomuffin777/XeMaya. Every item below was run on Zability u
 - **MiniMax-M3.1-Flash Maya-S** (the section below): runs natively on the three cards, 32 of 32 on its chat-template
   reference. Slow so far (about 60 tok/s prefill, 2-4 tok/s decode): 30% of its experts do not fit in VRAM.
   **Next, in order:**
-  1. the experts outside VRAM: the RAM copy instead of the files (run without `--mmap-experts`; in progress), the
-     B60's spare 3.9 GiB (a tenth layer), a tier profile at load, the missed experts over PCIe in decode;
+  1. the experts outside VRAM: the RAM copy instead of the files (the run without `--mmap-experts` ended in the
+     engine reset above: find out why first, on one card), the B60's spare 3.9 GiB (a tenth layer), a tier profile at
+     load, the missed experts over PCIe in decode;
   2. `mm_msa_select`'s scores are a work-item a block (FP32): a decode token at 3.8K context went 3.7 -> 2.4 tok/s
      with the selection on; score on the matrix engines or a work-group a block;
   3. the prompt profile (`STRATA_PROMPT_PROFILE=1`), then the chunked path's levers as GLM's and DeepSeek's;
