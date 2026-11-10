@@ -29,8 +29,10 @@ job() {
     systemd-run --user --scope -q -p MemoryMax=$((gib + 10))G -p MemorySwapMax=0 nice -n 5 timeout -s TERM $secs "$@"
 }
 kernel_log() { journalctl -k --since "-20 min" --no-pager | grep -E "NETDEV WATCHDOG|Engine reset|Fault response|AER:|oom-kill" && stop "a kernel message above"; return 0; }
-grep -q "WINDOW .* OPEN" /home/dan/supervisor/NIGHT-LOG.md || stop "no open window in NIGHT-LOG"
-tail -n 3 /home/dan/supervisor/NIGHT-LOG.md | grep -q "XEMAYA DONE: router restored" && stop "the last window is closed (NIGHT-LOG)"
+NL=/home/dan/supervisor/NIGHT-LOG.md
+open_line=$(grep -n "WINDOW [0-9]* OPEN" $NL | tail -1 | cut -d: -f1)
+[ -n "$open_line" ] || stop "no open window in NIGHT-LOG"
+tail -n +$((open_line + 1)) $NL | grep -q "XEMAYA DONE: router restored" && stop "the last window in NIGHT-LOG is closed: the owner opens a new one first"
 bash /DATA/AppData/strata-void-l3/preflight.sh 40 28 28 | tail -1 | grep -q OK || stop "preflight"
 
 if [ $FIRST -le 1 ]; then
