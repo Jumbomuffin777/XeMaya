@@ -23,6 +23,7 @@
 #include "strata/kernels/cpu/native_expert.hpp"
 #include "strata/kernels/dequant_bf16.hpp"
 #include "strata/kernels/elementwise.hpp"
+#include "strata/kernels/glm5.hpp"
 #include "strata/kernels/iq_mmq.hpp"
 #include "strata/kernels/native_mmvq.hpp"
 #include "strata/kernels/native_moe.hpp"
@@ -31,10 +32,12 @@
 #include "strata/kernels/native_rope.hpp"
 #include "strata/kernels/qsa.hpp"
 #include "strata/kernels/kv_q8.hpp"
+#include "strata/kernels/minimax.hpp"
 #include "strata/kernels/qsa_decode_attn.hpp"
 #include "strata/kernels/rope_scaling.hpp"
 #include "strata/kernels/router_top10.hpp"
 #include "strata/kernels/sampler.hpp"
+#include "strata/kernels/swiglu_clamp.hpp"
 #include "strata/kernels/verify_kernels.hpp"
 #include "strata/kernels/xmx_gemm.hpp"
 #include "strata/prefill/gemm.hpp"
@@ -883,7 +886,7 @@ bool PlainModel::prompt_chunks(const int32_t* tokens, int64_t n, int64_t pos, in
     const ModelSpec& s = spec_;
     const int64_t N = s.n_embd, NH = s.n_head, HD = s.key_length, NKV = nkv_, HV = s.ssm_dt_rank, HK = s.ssm_n_group;
     const int64_t E = s.n_expert, K = s.n_expert_used;
-    const int64_t FS = dense_ ? s.n_ff : s.n_ff_shexp, qw = (has_gate_ ? 2 : 1) * NH * HD;
+    const int64_t FS = ffn_width(), qw = (has_gate_ ? 2 : 1) * NH * HD;
     const float eps = (float) s.rms_eps;
     const k::QsaShapes qs = [&] {
         k::QsaShapes q = k::qsa_real_shapes();
@@ -940,6 +943,25 @@ bool PlainModel::prompt_chunks(const int32_t* tokens, int64_t n, int64_t pos, in
         t = now;
     };
     auto t_mark = std::chrono::steady_clock::now();
+    // XEMAYA_DUMP_LAYERS=1 (debugging against llama-eval-callback): a chunk's rows after each part of a block, their
+    // sum and first values, the stream synchronized for each
+    static const bool dump_layers = std::getenv("XEMAYA_DUMP_LAYERS") != nullptr;
+    auto dump = [&](const char* what, int64_t l, const float* dev, int64_t rows, int64_t width) {
+        if (!dump_layers) return;
+        std::vector<float> h((size_t) (rows * width));
+        if (!strata::gpu::stream_sync(cs) || !strata::gpu::copy(h.data(), dev, h.size() * 4)) return;
+        double sum = 0;
+        for (float v : h) sum += v;
+        // llama-eval-callback's excerpt: the first and last 3 rows, the first and last 3 values of each
+        std::fprintf(stderr, "dump %s-%lld = {%lld, %lld} sum = %.6f vals", what, (long long) l, (long long) width,
+                     (long long) rows, sum);
+        for (int64_t r = 0; r < rows; ++r) {
+            if (rows > 6 && r >= 3 && r < rows - 3) continue;
+            for (int64_t c = 0; c < width; ++c)
+                if (width <= 6 || c < 3 || c >= width - 3) std::fprintf(stderr, " %.4f", h[(size_t) (r * width + c)]);
+        }
+        std::fprintf(stderr, "\n");
+    };
     try {
         // the chunk's routes, every MoE layer's, for the adaptive tier's counts (below, after the chunk)
         const int64_t L = n_moe_;
@@ -961,6 +983,11 @@ bool PlainModel::prompt_chunks(const int32_t* tokens, int64_t n, int64_t pos, in
                 k::qsa_step_fill(P.h_steps + t * k::kStepCount, p0 + t, qs);
                 for (int64_t hd = 0; hd < NH; ++hd) P.h_pos[t * NH + hd] = (int32_t) (p0 + t);
                 for (int64_t hd = 0; hd < NKV; ++hd) P.h_pos[T * NH + t * NKV + hd] = (int32_t) (p0 + t);
+                P.h_pos[T * (NH + NKV) + t] = (int32_t) (p0 + t);
+            }
+            if (mm_ && !strata::gpu::copy_async(P.mm_pos, P.h_pos + T * (NH + NKV), (size_t) T * 4, cs)) {
+                err = std::string("plain prompt: staging: ") + strata::gpu::last_error();
+                return false;
             }
             if (!strata::gpu::copy_async(P.x, first() ? P.emb : hand, (size_t) (T * N) * 4, cs) ||
                 !strata::gpu::copy_async(P.steps, P.h_steps, (size_t) (T * k::kStepCount) * 4, cs) ||
@@ -1079,11 +1106,12 @@ bool PlainModel::prompt_chunks(const int32_t* tokens, int64_t n, int64_t pos, in
                     proj_hn(b.v, P.vcur);
                     // the norm and RoPE take at most 65535 rows a launch: the chunk's heads in token slices
                     auto norm_rope = [&](const float* in, int64_t in_row, const float* gamma, float* out, int64_t heads,
-                                         const int32_t* pos) {
+                                         const int32_t* pos, int64_t dim = 0) {
+                        if (dim == 0) dim = HD;
                         const int64_t per = 65535 / heads;
                         for (int64_t t0 = 0; t0 < T; t0 += per)
-                            k::native_qsa_rms_norm_rope(in + t0 * heads * in_row, (int) in_row, gamma, out + t0 * heads * HD,
-                                                        (int) (std::min(per, T - t0) * heads), (int) HD,
+                            k::native_qsa_rms_norm_rope(in + t0 * heads * in_row, (int) in_row, gamma, out + t0 * heads * dim,
+                                                        (int) (std::min(per, T - t0) * heads), (int) dim,
                                                         (int) s.rope_dims, eps, rs, pos + t0 * heads, cs);
                     };
                     norm_rope(P.qfull, qw / NH, b.q_norm, P.qcur, NH, P.pos_q);
@@ -1102,9 +1130,37 @@ bool PlainModel::prompt_chunks(const int32_t* tokens, int64_t n, int64_t pos, in
                     const int64_t cap = std::min<int64_t>(opt_.max_cells, pa + T);
                     const int64_t per_q = (int64_t) k::qsa_decode_attn_scratch_floats(cap, qs);
                     const int64_t nq_max = std::max<int64_t>(1, std::min<int64_t>((int64_t) opt_.max_t * attn_scratch_floats_ / per_q, 4096));
-                    const bool batched = prompt_attn_on && !opt_.kv_int8 &&   // prompt_attn reads FP16 pools
-                                         k::prompt_attn(P.qcur, k_pool_[(size_t) a], v_pool_[(size_t) a], page_table_, pa,
-                                                        T, qs, P.attn, cs);
+                    bool batched = false;
+                    if (mm_) {   // XeMaya, MiniMax-M3: the sparse attention (kernels/minimax.hpp), a query a work-item
+                        const int64_t ID = s.idx_key_length;
+                        const int32_t *sel = nullptr, *cnt = nullptr;
+                        if (!b.dense_ffn) {
+                            proj_hn(b.idx_q, P.mm_iqr);
+                            proj_hn(b.idx_k, P.mm_ikr);
+                            norm_rope(P.mm_iqr, ID, b.idx_q_norm, P.mm_iq, NKV, P.pos_k, ID);
+                            norm_rope(P.mm_ikr, ID, b.idx_k_norm, P.mm_ik, 1, P.mm_pos, ID);
+                            k::mm_idx_append(mm_idx_[(size_t) a], P.steps, k::kStepCount, P.mm_ik, (int) ID, (int) T, cs);
+                            k::mm_msa_select(P.mm_iq, mm_idx_[(size_t) a], P.steps, k::kStepCount, (int) T, (int) NKV,
+                                             (int) ID, (int) s.idx_block_size, (int) s.idx_top_k,
+                                             (int) s.idx_local_blocks,
+                                             std::min<int64_t>(mm_blocks_, (pa + T - 1) / s.idx_block_size + 1),
+                                             P.mm_scores, P.mm_sel, P.mm_cnt, cs);
+                            sel = P.mm_sel;
+                            cnt = P.mm_cnt;
+                        }
+                        if (!k::mm_msa_attn_xmx_on() ||
+                            !k::mm_msa_attn_xmx(P.qcur, k_pool_[(size_t) a], v_pool_[(size_t) a], page_table_, P.steps,
+                                                k::kStepCount, sel, cnt, (int) s.idx_top_k, (int) s.idx_block_size,
+                                                qs, P.attn, T, cs))
+                            k::mm_msa_attn(P.qcur, k_pool_[(size_t) a], v_pool_[(size_t) a], page_table_, P.steps,
+                                           k::kStepCount, sel, cnt, (int) s.idx_top_k, (int) s.idx_block_size, qs, 1,
+                                           nullptr, P.attn, T, cs);
+                        batched = true;
+                    }
+                    batched = batched ||
+                              (prompt_attn_on && !opt_.kv_int8 &&   // prompt_attn reads FP16 pools
+                               k::prompt_attn(P.qcur, k_pool_[(size_t) a], v_pool_[(size_t) a], page_table_, pa, T, qs,
+                                              P.attn, cs));
                     for (int64_t t = 0; !batched && t < T; t += nq_max) {
                         const int nq = (int) std::min<int64_t>(nq_max, T - t);
                         k::qsa_dense_attn_batch(P.qcur + t * NH * HD, pools, P.steps + t * k::kStepCount, cap, qs,
@@ -1120,9 +1176,58 @@ bool PlainModel::prompt_chunks(const int32_t* tokens, int64_t n, int64_t pos, in
                         proj(b.o, P.mix, T, 0, dense_half_sums_);   // averages of V's rows: in FP16's range as well
                     }
                 }
+                if (dump_layers && !b.recurrent) {
+                    dump("Qcur", l, P.qcur, T, NH * HD);
+                    dump("Kcur", l, P.kcur, T, NKV * HD);
+                    dump("Vcur", l, P.vcur, T, NKV * HD);
+                    dump("kqv_out", l, P.attn, T, NH * HD);
+                }
+                dump("attn_out", l, P.mix, T, N);
                 k::add_inplace(P.x, P.mix, T * N, cs);
+                dump("ffn_inp", l, P.x, T, N);
                 mark(b.recurrent ? 0 : 4, t_mark);
 
+                if (mm_) {   // XeMaya, MiniMax-M3: swiglu-oai in the dense FFN and the shared expert, the sigmoid router
+                    k::native_qsa_rms_norm_weighted(P.x, b.post_norm, P.hn, (int) N, (int) T, eps, cs);
+                    if (!b.dense_ffn) {
+                        k::f32_gemm_rows(P.hn, N, b.router, P.rlog, E, N, E, T, cs);
+                        const float scale = s.expert_weights_scale > 0 ? (float) s.expert_weights_scale : 1.0f;
+                        k::glm5_router_sigmoid(P.rlog, b.router_b, (int) T, (int) E, (int) K, s.expert_weights_norm,
+                                               scale, P.ids, P.w, cs);
+                    }
+                    f16(P.hn, T, N);
+                    const int64_t FW = b.sh_gate.n_out;
+                    proj_hn(b.sh_gate, P.sh_gate);
+                    proj_hn(b.sh_up, P.sh_up);
+                    auto down = [&](float* y) {   // the activation in FP32, then down (x16 is free by then)
+                        k::glm5_swiglu_clamp(P.sh_gate, P.sh_up, P.sh_gate, T * FW, -k::kSwigluOaiLimit, cs);
+                        if (!dense(b.sh_down, P.sh_gate, FW, y, T)) {
+                            f16(P.sh_gate, T, FW);
+                            proj(b.sh_down, y, T);
+                        }
+                    };
+                    if (b.dense_ffn) {
+                        down(P.moe_out);
+                    } else {
+                        const int64_t ml = s.moe_index(l);
+                        PromptRouted rst;
+                        if (!prompt_routed(ml, T, cpu_share, routes.empty() ? nullptr : routes.data() + ml * P.T * K,
+                                           [&](int stage) { mark(stage, t_mark); }, rst, err))
+                            return false;
+                        cpu_n += rst.cpu_n;
+                        cpu_rows += rst.cpu_rows;
+                        miss_n += rst.miss_n;
+                        down(P.shared);
+                        dump("ffn_shexp", l, P.shared, T, N);
+                        dump("ffn_moe_weights", l, P.w, T, K);
+                        k::native_moe_combine_multi(P.parts, P.w, P.shared, P.moe_out, N, K, (int) T, cs);
+                    }
+                    dump("ffn_out", l, P.moe_out, T, N);
+                    k::add_inplace(P.x, P.moe_out, T * N, cs);
+                    dump("l_out", l, P.x, T, N);
+                    mark(3, t_mark);
+                    continue;
+                }
                 if (dense_) {   // qwen35's FFN: gate and up from the normed rows, the SwiGLU, down; int8 where it can
                     k::native_qsa_rms_norm_weighted(P.x, b.post_norm, P.hn, (int) N, (int) T, eps, cs);
                     f16(P.hn, T, N);

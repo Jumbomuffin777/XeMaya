@@ -42,6 +42,7 @@
 #include "strata/kernels/sampler.hpp"
 #include "strata/spec/draft_policy.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -351,6 +352,12 @@ private:
         const float* router = nullptr;                        // F32 [n_embd, n_expert]
         const float* sh_gate_inp = nullptr;                   // F32 [n_embd]
         W sh_gate, sh_up, sh_down;                            // the shared expert, or qwen35's dense FFN
+        // XeMaya, MiniMax-M3 (mm_): a leading block's dense FFN in the shared expert's fields; the router's
+        // selection bias (exp_probs_b); the sparse attention's indexer (a block that routes)
+        bool dense_ffn = false;
+        const float* router_b = nullptr;                      // F32 [n_expert]
+        W idx_q, idx_k;
+        const float *idx_q_norm = nullptr, *idx_k_norm = nullptr;
     };
     /// stream_blocks: each block's matrices in the mapped file (W::data set as the block is bound), and their source
     struct Streamed {
@@ -479,6 +486,11 @@ private:
         float *d_kvr = nullptr, *d_kv = nullptr, *d_cv = nullptr, *d_cg = nullptr, *d_lat = nullptr, *d_scores = nullptr,
               *d_bmax = nullptr, *d_oaT = nullptr, *d_oa = nullptr, *d_engr = nullptr, *d_engkv = nullptr;
         int32_t *d_meta = nullptr, *d_ids = nullptr, *d_cnt = nullptr, *d_cand = nullptr, *d_ncand = nullptr;
+        // XeMaya: MiniMax-M3's (the generic chunk path): a token's position; the indexer's rows, the block scores
+        // (T rows of n_kv x the blocks of the chunk's last context at most: mm_blocks) and the selection
+        int32_t* mm_pos = nullptr;
+        float *mm_iqr = nullptr, *mm_iq = nullptr, *mm_ikr = nullptr, *mm_ik = nullptr, *mm_scores = nullptr;
+        int32_t *mm_sel = nullptr, *mm_cnt = nullptr;
         int32_t* h_meta = nullptr;         ///< pinned host: stage_ds41's records, T ints each
         float* h_eng = nullptr;            ///< pinned host: per Engram layer of the stage, T rows of table rows
         float* h_one = nullptr;            ///< pinned host: (1, 0, 0, 0) a token
@@ -721,6 +733,26 @@ private:
     bool has_gate_ = false;          ///< the attention's output gate: [q | gate] per head (qwen35moe)
     bool has_shared_ = false;        ///< the gated shared expert (qwen35moe)
     bool dense_ = false;             ///< a dense FFN in every block and no experts (qwen35)
+    /// XeMaya: MiniMax-M3 (minimax-m3; llama.cpp's minimax-m3.cpp) in this block: qwen3moe's attention (per-head QK
+    /// norms, a partly rotated key), leading blocks with a dense FFN, a sigmoid router with a selection bias, a shared
+    /// expert without a gate, swiglu-oai everywhere, and the sparse attention (MSA) in the blocks that route
+    bool mm_ = false;
+    // MiniMax-M3's sparse attention (kernels/minimax.hpp): per attention block that routes, the indexer's keys a cell
+    // (FP16 [max_cells][idx_key_length]); the window's indexer rows, block scores and selection
+    std::vector<uint16_t*> mm_idx_;
+    int64_t mm_blocks_ = 0;          ///< the blocks of max_cells: the selection's grid
+    float *mm_iqr_ = nullptr, *mm_iq_ = nullptr, *mm_ikr_ = nullptr, *mm_ik_ = nullptr, *mm_scores_ = nullptr,
+          *mm_scratch_ = nullptr;
+    int32_t *mm_sel_ = nullptr, *mm_cnt_ = nullptr;
+    static constexpr int kMmSplits = 16;   ///< a decode window's query in this many parts (mm_msa_attn)
+    /// The attention of block `b` (attention block `a`) over T rows already in the K/V pools: q [T][n_head][key]
+    /// into attn; hn (and, in a window, its q8_1 in xq_) the block's normed rows.  `P`: a prompt chunk's buffers
+    /// (null: a window's), `pa` its first position.
+    void mm_attention(const Block& b, int64_t a, int64_t T, const float* q, float* attn, strata::gpu::Stream cs);
+    /// The widest of the shared expert and the dense FFNs: the windows' and the prompt's gate / up buffers
+    int64_t ffn_width() const {
+        return dense_ ? spec_.n_ff : mm_ ? std::max(spec_.n_ff, spec_.n_ff_shexp) : spec_.n_ff_shexp;
+    }
     /// a dense model's one-row windows with a graph (0) or straight onto the stream (1), or being timed (-1): the
     /// first decode windows in turns, then the faster (STRATA_PLAIN_EAGER=0 / 1 fixes it).  Other models: 0
     int eager_ = 0;

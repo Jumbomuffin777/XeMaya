@@ -31,6 +31,7 @@
 #include "strata/kernels/cpu/native_expert.hpp"
 #include "strata/kernels/elementwise.hpp"
 #include "strata/kernels/gdn.hpp"
+#include "strata/kernels/glm5.hpp"
 #include "strata/kernels/iq_kernels.hpp"
 #include "strata/kernels/iq_mmq.hpp"
 #include "strata/kernels/native_gdn.hpp"
@@ -42,11 +43,13 @@
 #include "strata/kernels/qsa.hpp"
 #include "strata/kernels/qsa_select.hpp"
 #include "strata/kernels/kv_q8.hpp"
+#include "strata/kernels/minimax.hpp"
 #include "strata/kernels/mrope.hpp"
 #include "strata/kernels/qsa_decode_attn.hpp"
 #include "strata/kernels/rope_scaling.hpp"
 #include "strata/kernels/router_top10.hpp"
 #include "strata/kernels/sampler.hpp"
+#include "strata/kernels/swiglu_clamp.hpp"
 #include "strata/kernels/draft_head.hpp"
 #include "strata/kernels/verify_kernels.hpp"
 #include "strata/prefill/moe_mmq.hpp"
@@ -241,7 +244,9 @@ bool PlainModel::load_block(const GgufModel& m, int64_t l, Block& b, std::string
         }
         nkv_ = nkv;
     }
-    if (dense_) {   // qwen35's FFN, in the shared expert's fields (the same products, without the gate or the router)
+    b.dense_ffn = mm_ && l < s.n_dense_lead;
+    if (dense_ || b.dense_ffn) {   // qwen35's FFN (MiniMax-M3's leading blocks'), in the shared expert's fields (the
+                                   // same products, without the gate or the router)
         if (!upload(m, p + "ffn_gate.weight", b.sh_gate, err) || !upload(m, p + "ffn_up.weight", b.sh_up, err) ||
             !upload(m, p + "ffn_down.weight", b.sh_down, err))
             return false;
@@ -253,8 +258,22 @@ bool PlainModel::load_block(const GgufModel& m, int64_t l, Block& b, std::string
         return true;
     }
     if (!upload_f32(m, p + "ffn_gate_inp.weight", N * E, b.router, err)) return false;
+    if (mm_) {   // the selection bias, and the sparse attention's indexer
+        const int64_t ID = s.idx_key_length;
+        if (!upload_f32(m, p + "exp_probs_b.bias", E, b.router_b, err) ||
+            !upload(m, p + "indexer.q_proj.weight", b.idx_q, err) ||
+            !upload(m, p + "indexer.k_proj.weight", b.idx_k, err) ||
+            !upload_f32(m, p + "indexer.q_norm.weight", (uint64_t) ID, b.idx_q_norm, err) ||
+            !upload_f32(m, p + "indexer.k_norm.weight", (uint64_t) ID, b.idx_k_norm, err))
+            return false;
+        if (b.idx_q.n_in != s.n_embd || b.idx_q.n_out != s.idx_n_head * ID || b.idx_k.n_in != s.n_embd ||
+            b.idx_k.n_out != ID) {
+            err = "plain model: block " + std::to_string(l) + "'s indexer has other shapes";
+            return false;
+        }
+    }
     if (!has_shared_) return true;
-    if (!upload_f32(m, p + "ffn_gate_inp_shexp.weight", N, b.sh_gate_inp, err) ||
+    if ((!mm_ && !upload_f32(m, p + "ffn_gate_inp_shexp.weight", N, b.sh_gate_inp, err)) ||
         !upload(m, p + "ffn_gate_shexp.weight", b.sh_gate, err) ||
         !upload(m, p + "ffn_up_shexp.weight", b.sh_up, err) ||
         !upload(m, p + "ffn_down_shexp.weight", b.sh_down, err))
@@ -578,7 +597,8 @@ bool PlainModel::split_auto_points(std::string& err) {
 
 bool PlainModel::load_qwen(std::string& err) {
     const ModelSpec& s = spec_;
-    if (s.arch != ModelArch::Qwen35Moe && s.arch != ModelArch::Qwen3Moe && s.arch != ModelArch::Qwen35) {
+    if (s.arch != ModelArch::Qwen35Moe && s.arch != ModelArch::Qwen3Moe && s.arch != ModelArch::Qwen35 &&
+        s.arch != ModelArch::MiniMaxM3) {
         err = "plain model: " + s.arch_name + " is not run by this engine yet";
         return false;
     }
@@ -599,10 +619,13 @@ bool PlainModel::load_qwen(std::string& err) {
         return false;
     }
     if (opt_.encoder) opt_.spec = 0;   // no decode: no MTP layer, no drafts
+    mm_ = s.arch == ModelArch::MiniMaxM3;   // XeMaya
     has_gate_ = q35;
-    has_shared_ = q35 && !dense_;
+    has_shared_ = (q35 && !dense_) || mm_;
     bool shape_ok = s.key_length == s.value_length && (s.key_length == 128 || s.key_length == 256) &&
-                    (s.rope_dims == 64 || s.rope_dims == s.key_length) && s.n_expert_used <= 15 && s.n_dense_lead == 0;
+                    (s.rope_dims == 64 || s.rope_dims == s.key_length) && s.n_expert_used <= 15 &&
+                    (s.n_dense_lead == 0 || mm_);
+    if (mm_) shape_ok = shape_ok && s.n_ff_shexp > 0 && s.n_expert_used <= 32;
     if (q35)
         shape_ok = shape_ok && s.ssm_d_state == 128 && s.ssm_d_conv == 4 && s.ssm_n_group > 0 &&
                    s.ssm_dt_rank % s.ssm_n_group == 0 && s.ssm_d_inner == s.ssm_dt_rank * s.ssm_d_state &&
@@ -638,6 +661,17 @@ bool PlainModel::load_qwen(std::string& err) {
         k::rope_scaling_set(rs);
     }
     k::gdn_set_silu_gate(q35);
+    // XeMaya: MiniMax-M3's FFNs are llama.cpp's swiglu-oai (LLM_FFN_SWIGLU_OAI_MOE: alpha 1.702, limit 7); the routed
+    // experts' kernels read it as a process setting (swiglu_clamp.hpp), before any graph
+    if (mm_) k::expert_swiglu_set_oai(k::kSwigluOaiLimit);
+    if (mm_ && opt_.kv_int8) {
+        std::fprintf(stderr, "strata plain: --kv int8 is not built for MiniMax-M3's sparse attention: the K/V cache stays FP16\n");
+        opt_.kv_int8 = false;
+    }
+    if (mm_ && (s.idx_key_length != s.key_length || s.idx_key_length > 256)) {
+        err = "plain model: MiniMax-M3's indexer key is not the attention's key length";
+        return false;
+    }
 
     const GgufModel& m = *model_;
     // the embedding stays in the mapping: a token's row is dequantized on the host
@@ -789,7 +823,7 @@ bool PlainModel::load_qwen(std::string& err) {
     opt_.max_cells = n_pages_ * qs.page_size;
     // the decode attention's form for this GPU (an fp16 cache), timed before any graph is recorded and before the cache
     // takes its VRAM (an encoder does not decode)
-    if (!opt_.kv_int8 && !opt_.encoder) {
+    if (!opt_.kv_int8 && !opt_.encoder && !mm_) {
         try {
             k::qsa_dense_attn_tune(qs, opt_.max_cells, cs_);
         } catch (const std::exception& e) {
@@ -825,6 +859,17 @@ bool PlainModel::load_qwen(std::string& err) {
                 return false;
             }
         }
+        // XeMaya, MiniMax-M3: the indexer's keys of this stage's blocks that route
+        mm_idx_.assign((size_t) n_attn, nullptr);
+        mm_blocks_ = mm_ ? (opt_.max_cells + s.idx_block_size - 1) / s.idx_block_size : 0;
+        for (int64_t l = lb_; l < le_ && mm_; ++l) {
+            const Block& b = blocks_[(size_t) l];
+            if (b.dense_ffn) continue;
+            if (!take(mm_idx_[(size_t) b.attn], (size_t) (opt_.max_cells * s.idx_key_length) * 2)) {
+                err = "plain model: no VRAM for the indexer's keys (" + std::to_string(opt_.max_cells) + " cells)";
+                return false;
+            }
+        }
         std::vector<int32_t> table((size_t) n_pages_);
         for (int64_t i = 0; i < n_pages_; ++i) table[(size_t) i] = (int32_t) i;
         if (!strata::gpu::alloc_device(&page_table_, table.size() * 4) ||
@@ -852,11 +897,11 @@ bool PlainModel::load_qwen(std::string& err) {
     // the window's buffers
     const uint64_t T = (uint64_t) opt_.max_t, NH = (uint64_t) s.n_head, HD = (uint64_t) s.key_length;
     const uint64_t NKV = (uint64_t) qs.n_head_kv, HV = (uint64_t) s.ssm_dt_rank, ZV = (uint64_t) s.ssm_d_inner;
-    const uint64_t K = (uint64_t) s.n_expert_used, FS = (uint64_t) (dense_ ? s.n_ff : s.n_ff_shexp);
+    const uint64_t K = (uint64_t) s.n_expert_used, FS = (uint64_t) ffn_width();
     hand_w_ = s.n_embd;
     if (!mapped(T * N * 4, (void**) &h_emb_, (void**) &m_emb_) ||
         !mapped(T * k::kStepCount * 4, (void**) &h_step_, (void**) &m_step_) ||
-        !mapped(T * (NH + NKV) * 4, (void**) &h_pos_, (void**) &m_pos_) ||
+        !mapped(T * (NH + NKV + 1) * 4, (void**) &h_pos_, (void**) &m_pos_) ||   // (+ a position a token: MiniMax-M3)
         !mapped(T * 4 + 16, (void**) &h_out_, (void**) &m_out_) || !mapped(16, (void**) &h_prob_, (void**) &m_prob_) ||
         (!first() && !mapped(T * N * 4, (void**) &h_in_, (void**) &m_in_)) ||
         (!last() && !mapped(T * N * 4, (void**) &h_hand_, (void**) &m_hand_))) {
@@ -872,7 +917,17 @@ bool PlainModel::load_qwen(std::string& err) {
         *p = (std::remove_reference_t<decltype(*p)>) d;
         return true;
     };
-    if (!dev(&step_, T * k::kStepCount * 4) || !dev(&pos_, T * (NH + NKV) * 4) || !dev(&x_, T * N * 4) ||
+    if (mm_) {
+        const uint64_t ID = (uint64_t) s.idx_key_length, TK = (uint64_t) s.idx_top_k;
+        if (!dev(&mm_iqr_, T * NKV * ID * 4) || !dev(&mm_iq_, T * NKV * ID * 4) || !dev(&mm_ikr_, T * ID * 4) ||
+            !dev(&mm_ik_, T * ID * 4) || !dev(&mm_scores_, T * NKV * (uint64_t) mm_blocks_ * 4) ||
+            !dev(&mm_sel_, T * NKV * TK * 4) || !dev(&mm_cnt_, T * NKV * 4) ||
+            !dev(&mm_scratch_, T * k::mm_msa_attn_scratch_floats(kMmSplits, qs) * 4)) {
+            err = "plain model: no VRAM for the sparse attention's buffers";
+            return false;
+        }
+    }
+    if (!dev(&step_, T * k::kStepCount * 4) || !dev(&pos_, T * (NH + NKV + 1) * 4) || !dev(&x_, T * N * 4) ||
         !dev(&hn_, T * N * 4) || !dev(&mix_, T * N * 4) || !dev(&xq_, k::native_q8_1_bytes((int) max_in, (int) T)) ||
         !dev(&qkv_, T * (uint64_t) C * 4) || !dev(&craw_, (uint64_t) C * 4) || !dev(&hc_, T * (uint64_t) C * 4) ||
         !dev(&z_, T * ZV * 4) || !dev(&alpha_, T * HV * 4) || !dev(&beta_, T * HV * 4) || !dev(&gate_, T * HV * 4) ||
@@ -920,7 +975,7 @@ void PlainModel::prompt_carve(int64_t T, PromptBufs& b, uint8_t* dev, uint8_t* h
     const uint64_t HV = (uint64_t) s.ssm_dt_rank, ZV = (uint64_t) s.ssm_d_inner;
     const uint64_t C = (uint64_t) (2 * s.ssm_n_group * s.ssm_d_state) + ZV, E = (uint64_t) s.n_expert;
     // FS: the shared expert's width, or qwen35's dense FFN's (its products go through the same buffers)
-    const uint64_t K = (uint64_t) s.n_expert_used, FS = (uint64_t) (dense_ ? s.n_ff : s.n_ff_shexp);
+    const uint64_t K = (uint64_t) s.n_expert_used, FS = (uint64_t) ffn_width();
     const uint64_t FF = (uint64_t) s.n_ff_exp;
     // the MTP layer's input rows ([embedding | trunk row], 2 N wide) go through qfull and x16
     const uint64_t U = (uint64_t) T, TK = U * K, QW = std::max<uint64_t>((has_gate_ ? 2u : 1u) * NH * HD, has_mtp_ ? 2 * N : 0);
@@ -984,6 +1039,12 @@ void PlainModel::prompt_carve(int64_t T, PromptBufs& b, uint8_t* dev, uint8_t* h
     take(b.kcur, U * NKV * HD * 4); take(b.vcur, U * NKV * HD * 4); take(b.attn, U * NH * HD * 4);
     take(b.attn32, U * NH * HD * 4);
     take(b.steps, U * k::kStepCount * 4); take(b.pos_q, U * NH * 4); take(b.pos_k, U * NKV * 4);
+    if (mm_) {   // XeMaya: MiniMax-M3's sparse attention
+        const uint64_t ID = (uint64_t) s.idx_key_length;
+        take(b.mm_pos, U * 4); take(b.mm_iqr, U * NKV * ID * 4); take(b.mm_iq, U * NKV * ID * 4);
+        take(b.mm_ikr, U * ID * 4); take(b.mm_ik, U * ID * 4); take(b.mm_scores, U * NKV * (uint64_t) mm_blocks_ * 4);
+        take(b.mm_sel, U * NKV * (uint64_t) s.idx_top_k * 4); take(b.mm_cnt, U * NKV * 4);
+    }
     take(b.rlog, U * E * 4); take(b.ids, TK * 4); take(b.w, TK * 4); take(b.shared, U * N * 4);
     take(b.sh_g, (U + 4) * 4); take(b.sh_gate, U * FS * 4); take(b.sh_up, U * FS * 4);
     // the FP16 path's: the routed rows and the SwiGLU in FP16, kGroup experts' FP16 weights, the down product's rows
@@ -1070,7 +1131,7 @@ void PlainModel::prompt_carve(int64_t T, PromptBufs& b, uint8_t* dev, uint8_t* h
         ptr = host ? (std::remove_reference_t<decltype(ptr)>) (host + at) : nullptr;
         at += (std::max<uint64_t>(bytes, 1) + 255) & ~255ull;
     };
-    hold(b.emb, U * N * 4); hold(b.h_steps, U * k::kStepCount * 4); hold(b.h_pos, U * (NH + NKV) * 4);
+    hold(b.emb, U * N * 4); hold(b.h_steps, U * k::kStepCount * 4); hold(b.h_pos, U * (NH + NKV + 1) * 4);
     hold(b.h_ids, TK * 4); hold(b.h_src, TK * 4); hold(b.h_slot, TK * 4); hold(b.h_bounds, (E + 1) * 4);
     hold(b.h_entry, TK * 4);
     hold(b.h_wtab, E * sizeof(void*)); hold(b.h_rbounds, (2 * E + 2) * 4);
@@ -1951,6 +2012,8 @@ std::vector<PlainModel::StatePart> PlainModel::state_parts(int64_t tokens) const
     const int64_t pages = std::min<int64_t>(n_pages_, (tokens + qs.page_size - 1) / qs.page_size);
     const size_t cells = (size_t) (pages * qs.n_head_kv * qs.page_size);
     for (size_t a = 0; a < k_pool_.size(); ++a) {
+        if (a < mm_idx_.size() && mm_idx_[a] != nullptr)   // XeMaya: MiniMax-M3's indexer keys of the tokens
+            parts.push_back({mm_idx_[a], (size_t) (tokens * s.idx_key_length) * 2});
         if (k_pool_[a] != nullptr) {
             parts.push_back({k_pool_[a], cells * qs.head_dim * 2});
             parts.push_back({v_pool_[a], cells * qs.head_dim * 2});
@@ -2181,12 +2244,57 @@ void PlainModel::pool_fn(void* user, const float* x_f, const int32_t* ids, int64
     expert_pool_dispatch_multi(m->disp_, x_f, ids, n_tok, k, out);
 }
 
+// XeMaya: a window's attention for MiniMax-M3 (llama.cpp's minimax-m3.cpp): in a block that routes, the indexer's
+// keys into its cache and each K/V head's blocks selected; the leading dense blocks attend every cell
+void PlainModel::mm_attention(const Block& b, int64_t a, int64_t T, const float* q, float* attn,
+                              strata::gpu::Stream cs) {
+    const ModelSpec& s = spec_;
+    const k::QsaShapes qs = attn_shapes(s, nkv_);
+    const int64_t NH = s.n_head, NKV = qs.n_head_kv, ID = s.idx_key_length;
+    const float eps = (float) s.rms_eps;
+    const k::RopeScaling& rs = k::rope_scaling();
+    const int32_t* pos_k = pos_ + (size_t) opt_.max_t * NH;
+    const int32_t* pos_1 = pos_ + (size_t) opt_.max_t * (NH + NKV);
+    const int32_t *sel = nullptr, *cnt = nullptr;
+    if (!b.dense_ffn) {
+        auto proj = [&](const W& w, float* y) {   // from hn_'s q8_1 in xq_ (the block's norm wrote both)
+            if (w.type == kBF16)
+                k::bf16_gemv_fp32_mmvf_multi(hn_, w.n_in, static_cast<const uint16_t*>(w.data), y, w.n_out, w.n_in,
+                                             w.n_out, (int) T, cs);
+            else if (w.type == kF32)
+                k::f32_gemv_fp32_mmvf_multi(hn_, w.n_in, static_cast<const float*>(w.data), y, w.n_out, w.n_in, w.n_out,
+                                            (int) T, cs);
+            else
+                k::native_mmvq(w.type, w.data, xq_, y, w.n_in, w.n_out, (int) T, cs);
+        };
+        proj(b.idx_q, mm_iqr_);
+        proj(b.idx_k, mm_ikr_);
+        k::native_qsa_rms_norm_rope(mm_iqr_, (int) ID, b.idx_q_norm, mm_iq_, (int) (T * NKV), (int) ID,
+                                    (int) s.rope_dims, eps, rs, pos_k, cs);
+        k::native_qsa_rms_norm_rope(mm_ikr_, (int) ID, b.idx_k_norm, mm_ik_, (int) T, (int) ID, (int) s.rope_dims, eps,
+                                    rs, pos_1, cs);
+        k::mm_idx_append(mm_idx_[(size_t) a], step_, k::kStepCount, mm_ik_, (int) ID, (int) T, cs);
+        k::mm_msa_select(mm_iq_, mm_idx_[(size_t) a], step_, k::kStepCount, (int) T, (int) NKV, (int) ID,
+                         (int) s.idx_block_size, (int) s.idx_top_k, (int) s.idx_local_blocks, mm_blocks_, mm_scores_,
+                         mm_sel_, mm_cnt_, cs);
+        sel = mm_sel_;
+        cnt = mm_cnt_;
+    }
+    // on the matrix engines where the device has them (XEMAYA_MM_ATTN=ref: the FP32 kernel)
+    if (k::mm_msa_attn_xmx_on() &&
+        k::mm_msa_attn_xmx(q, k_pool_[(size_t) a], v_pool_[(size_t) a], page_table_, step_, k::kStepCount, sel, cnt,
+                           (int) s.idx_top_k, (int) s.idx_block_size, qs, attn, T, cs))
+        return;
+    k::mm_msa_attn(q, k_pool_[(size_t) a], v_pool_[(size_t) a], page_table_, step_, k::kStepCount, sel, cnt,
+                   (int) s.idx_top_k, (int) s.idx_block_size, qs, kMmSplits, mm_scratch_, attn, T, cs);
+}
+
 bool PlainModel::record_block(const Block& b, int64_t ml, int T, uint32_t& ring, std::vector<strata::gpu::Graph*>& segs,
                               strata::gpu::Stream cs, std::string& err) {
     const ModelSpec& s = spec_;
     const int64_t N = s.n_embd, NH = s.n_head, HD = s.key_length, HV = s.ssm_dt_rank, HK = s.ssm_n_group;
     const int64_t ZV = s.ssm_d_inner, S = s.ssm_d_state, C = 2 * HK * S + ZV, E = s.n_expert, K = s.n_expert_used;
-    const int64_t FS = dense_ ? s.n_ff : s.n_ff_shexp;
+    const int64_t FS = ffn_width();
     const float eps = (float) s.rms_eps;
     const k::QsaShapes qs = attn_shapes(s, nkv_);
     const int64_t NKV = qs.n_head_kv;
@@ -2261,7 +2369,8 @@ bool PlainModel::record_block(const Block& b, int64_t ml, int T, uint32_t& ring,
             else
                 k::kv_append_step(k_pool_[(size_t) a], v_pool_[(size_t) a], page_table_, st, kc, vc, qs, cs);
         }
-        k::qsa_dense_attn_batch(qcur_, kv_pools((size_t) a), step_, opt_.max_cells, qs, attn_scratch_, attn_, T, cs);
+        if (mm_) mm_attention(b, a, T, qcur_, attn_, cs);   // XeMaya: MiniMax-M3's sparse attention
+        else k::qsa_dense_attn_batch(qcur_, kv_pools((size_t) a), step_, opt_.max_cells, qs, attn_scratch_, attn_, T, cs);
         if (has_gate_) {
             k::native_qsa_gate_apply(attn_, qfull_, attn32_, (int) (T * NH), (int) HD, cs);
             proj(b.o, attn32_, mix_, T, true);
@@ -2271,6 +2380,29 @@ bool PlainModel::record_block(const Block& b, int64_t ml, int T, uint32_t& ring,
     }
     k::add_inplace(x_, mix_, (int64_t) T * N, cs);
 
+    if (mm_) {   // XeMaya, MiniMax-M3: swiglu-oai in the dense FFN and the shared expert, the sigmoid router
+        k::native_qsa_rms_norm_weighted_q8_1(x_, b.post_norm, hn_, xq_, (int) N, T, eps, cs);
+        auto ffn = [&](float* out) {   // gate / up from hn_'s q8_1, the activation, down
+            const int FW = b.sh_gate.n_out;
+            proj(b.sh_gate, hn_, sh_gate_, T, false);
+            proj(b.sh_up, hn_, sh_up_, T, false);
+            k::glm5_swiglu_clamp(sh_gate_, sh_up_, sh_gate_, (int64_t) T * FW, -k::kSwigluOaiLimit, cs);
+            proj(b.sh_down, sh_gate_, out, T, true);
+        };
+        if (b.dense_ffn) {
+            ffn(moe_out_);
+        } else {
+            k::f32_gemv_fp32_mmvf_multi(hn_, N, b.router, rlog_, E, N, E, T, cs);
+            const float scale = s.expert_weights_scale > 0 ? (float) s.expert_weights_scale : 1.0f;
+            k::glm5_router_sigmoid(rlog_, b.router_b, T, (int) E, (int) K, s.expert_weights_norm, scale, ids_, w_, cs);
+            moe_publish(ring, T, cs);
+            ffn(shared_);   // the shared expert while the host serves
+            if (!moe_experts(ml, ring, T, segs, cs, err)) return false;
+            k::native_moe_combine_multi(win_.parts(), w_, shared_, moe_out_, N, K, T, cs);
+        }
+        k::add_inplace(x_, moe_out_, (int64_t) T * N, cs);
+        return true;
+    }
     if (dense_) {   // qwen35's FFN: the shared expert's products, from the norm's q8_1 rows where the weights take them
         const bool q8 = b.sh_gate.type != kBF16 && b.sh_up.type != kBF16 && b.sh_down.type != kBF16;
         if (!q8) {
@@ -2333,7 +2465,7 @@ bool PlainModel::record_window(int T, strata::gpu::Stream cs, std::string& err) 
     const int64_t NKV = attn_shapes(s, nkv_).n_head_kv;
     k::copy_from_mapped(x_, first() ? m_emb_ : m_in_, (int64_t) T * N, cs);   // the embeddings, or the rows handed on
     k::copy_i32_from_mapped(step_, m_step_, (int64_t) T * k::kStepCount, cs);
-    k::copy_i32_from_mapped(pos_, m_pos_, (int64_t) opt_.max_t * (NH + NKV), cs);
+    k::copy_i32_from_mapped(pos_, m_pos_, (int64_t) opt_.max_t * (NH + NKV + 1), cs);
     uint32_t ring = 0;
     for (int64_t l = lb_; l < le_; ++l)
         if (!record_block(blocks_[(size_t) l], s.moe_index(l), T, ring, segs_[(size_t) T], cs, err)) return false;
@@ -2496,6 +2628,7 @@ bool PlainModel::stage(const int32_t* tokens, int T, int64_t pos, std::string& e
         }
         k::qsa_step_fill(h_step_ + (size_t) t * k::kStepCount, pos + t, qs);
         for (int64_t h = 0; h < NH; ++h) h_pos_[(size_t) (t * NH + h)] = (int32_t) (pos + t);
+        h_pos_[(size_t) (opt_.max_t * (NH + qs.n_head_kv) + t)] = (int32_t) (pos + t);   // a token's own (MiniMax-M3)
         int32_t* pk = h_pos_ + (size_t) opt_.max_t * NH;
         for (int64_t h = 0; h < qs.n_head_kv; ++h) pk[(size_t) (t * qs.n_head_kv + h)] = (int32_t) (pos + t);
     }

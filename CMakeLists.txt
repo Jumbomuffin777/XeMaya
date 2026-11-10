@@ -424,7 +424,7 @@ if(STRATA_ENABLE_XE)
                                     src/kernels/xe/xmx_gemm.cpp src/kernels/xe/dp4a_gemm.cpp
                                     src/kernels/xe/mma_gemm.cpp src/kernels/xe/iq_mmq.cpp src/kernels/xe/prompt_attn.cpp
                                     src/kernels/xe/q8_mma.cpp
-                                    src/kernels/xe/matrix_report.cpp src/kernels/xe/glm5.cpp src/kernels/xe/glm5_mla_xmx.cpp src/kernels/xe/ds41.cpp src/kernels/xe/ds41_attn_xmx.cpp
+                                    src/kernels/xe/matrix_report.cpp src/kernels/xe/glm5.cpp src/kernels/xe/glm5_mla_xmx.cpp src/kernels/xe/ds41.cpp src/kernels/xe/ds41_attn_xmx.cpp src/kernels/xe/minimax.cpp src/kernels/xe/minimax_attn_xmx.cpp
                                     src/kernels/xe/draft_head.cpp)
   target_link_libraries(strata_kernels PUBLIC strata_core strata_ngram)
   # plan v0.3 P6: llama.cpp's block layouts and codebook grids for the i-quant formats (MIT, third_party/main/ggml)
@@ -1048,6 +1048,10 @@ if(STRATA_ENABLE_XE)
     add_executable(ds41_parity src/kernels/ds41_parity.cpp)
     target_link_libraries(ds41_parity PRIVATE strata_kernels)
     add_test(NAME ds41_parity COMMAND ds41_parity --selftest)
+    # XeMaya: MiniMax-M3's sparse attention and swiglu-oai (minimax.hpp) against host references
+    add_executable(minimax_parity src/kernels/minimax_parity.cpp)
+    target_link_libraries(minimax_parity PRIVATE strata_kernels)
+    add_test(NAME minimax_parity COMMAND minimax_parity --selftest)
     # the reads IGC 2.27 to 2.30 miscompile for Xe2 GPUs, through the runtime's workaround (AGENTS.md)
     add_executable(igc_gep_probe src/kernels/igc_gep_probe.cpp)
     target_link_libraries(igc_gep_probe PRIVATE strata_kernels)
@@ -1308,6 +1312,10 @@ if(STRATA_NATIVE_EXPERTS)
   add_executable(ds41_host src/reference/ds41_host.cpp)
   target_link_libraries(ds41_host PRIVATE strata_artifact ggml-base Threads::Threads)
   target_compile_options(ds41_host PRIVATE -O3 -mavx2 -mfma)
+  # XeMaya: MiniMax-M3 the same way: mm_host MODEL.gguf IDS OUT.f32
+  add_executable(mm_host src/reference/mm_host.cpp)
+  target_link_libraries(mm_host PRIVATE strata_artifact ggml-base Threads::Threads)
+  target_compile_options(mm_host PRIVATE -O3 -mavx2 -mfma)
   if(STRATA_BUILD_TESTS)
     # the Q5_1 block dequantizer (a Q5_1 PLE table, upstream #651) against ggml's, synthetic blocks: no model, no GPU
     add_executable(dequant_q5_1_test tests/core/dequant_q5_1_test.cpp)
