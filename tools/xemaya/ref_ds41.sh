@@ -7,12 +7,12 @@
 # xemaya/reference/minimax-TAG-NAME.json); REF_SERVER_ARGS are more arguments for llama-server (MiniMax-M3's sparse
 # attention needs "-fa on"); REF_CONTEXT its context (default 2048); REF_MEMORY_GIB the cap (default 40).
 # llama.cpp v0.8.0 (8642541b2) built with GGML_SYCL=OFF, one server load for every prompt, greedy, each step's top-5
-# log-probabilities. Per prompt: /DATA/Projects/xemaya/prompts/ds41/TAG-NAME.ids (the tokens, BOS included) and
+# log-probabilities. Per prompt: <work>/prompts/ds41/TAG-NAME.ids (the tokens, BOS included) and
 # xemaya/reference/ds41-TAG-NAME.json (compare_ref.py's format). nice 19, 8 threads, a 40 GB cap and a watchdog that
 # stops the server when the host's MemAvailable falls under 14 GiB.
 set -u
 M=$1; TAG=$2; NP=$3; shift 3
-X=/DATA/Projects/xemaya
+X=${XEMAYA_WORK:?the work folder: LOCAL.md}
 OUT=$X/XeMaya/xemaya/reference
 S=$X/ref/llama.cpp-v0.8.0/build-cpu/bin/llama-server
 PORT=${PORT:-18996}

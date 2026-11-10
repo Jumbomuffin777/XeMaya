@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Niko1221 and the Strata contributors
+# SPDX-License-Identifier: MIT
 """#4701 decision data: a file whose text lists </parameter>, </function>, </tool_call> on lines of their own, written through a real call.
 
 Option C (decided 10-30, phaseA-tests/urgent029/OPTIONS-4701-4704.md): the closing sequence ends the value unless prose follows it AND a later

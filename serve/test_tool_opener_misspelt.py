@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Niko1221 and the Strata contributors
+# SPDX-FileCopyrightText: 2026 Jumbomuffin777 and the XeMaya contributors
+# SPDX-License-Identifier: LGPL-3.0-or-later AND MIT
 """serve/test_tool_opener_misspelt.py - #5276: `<toolcall>` (no underscore) before `<function=NAME>` of a declared tool opens the call.
 
 Seen live (Qwen3.8-Flash-Next UD-Q4_K_XL, OpenMinis on /v1/messages): the model wrote the opener as ordinary text, misspelled

@@ -6,7 +6,7 @@
 #   window4_qwen.sh ARM SPEC [extra qwen_bench.py args]      ARM: up (upstream Strata) | xe (XeStrata) | maya (XeMaya); not the engines names, which preflight.sh takes for a running engine
 set -u
 ARM=$1; SPEC=$2; shift 2
-X=/DATA/Projects/xemaya; W=$X/logs/window4; T=$X/XeMaya/tools/xemaya; S=/DATA/AppData/strata-void-l3
+X=${XEMAYA_WORK:?the work folder: LOCAL.md}; W=$X/logs/window4; T=$X/XeMaya/tools/xemaya; S=${XEMAYA_PRODUCTION_DIR:?the production folder: LOCAL.md}
 mkdir -p $W
 set +u; source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1; set -u
 # XeStrata and XeMaya do not have upstream SYCL port options: the experts come through the page cache instead
@@ -19,7 +19,7 @@ case $ARM in
 esac
 L=${LABEL:-$ARM-spec$SPEC}
 bash $S/preflight.sh 40 28 28 | tail -1 | grep -q OK || { echo "PREFLIGHT FAILED"; bash $S/preflight.sh 40 28 28 | tail -3; exit 75; }
-python3 /DATA/AppData/zability-gpu-lease/gpulease.py run --holder xemaya-dev --memory-budget-gib 60 --note "XeMaya window 4: Qwen bench $L" -- \
+python3 ${XEMAYA_LEASE:?the GPU lease program: LOCAL.md} run --holder xemaya-dev --memory-budget-gib 60 --note "XeMaya window 4: Qwen bench $L" -- \
   $T/safety_guard.sh --log $W/safety_guard.log -- \
   systemd-run --user --scope -q -p MemoryMax=70G -p MemorySwapMax=0 nice -n 5 timeout -s TERM 1500 \
   python3 $T/qwen_bench.py --exe $EXE --profile $S/profiles/qwen38-ista-iq3s.json --prompts $X/prompts/qwen \

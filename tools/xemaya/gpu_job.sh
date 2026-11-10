@@ -10,8 +10,8 @@
 set -u
 T=$(cd "$(dirname "$0")" && pwd)
 X=${XEMAYA_HOME:-$(cd "$T/../../.." && pwd)}
-LEASE=${XEMAYA_LEASE:-/DATA/AppData/zability-gpu-lease/gpulease.py}
-UNIT=${XEMAYA_PRODUCTION_UNIT:-zability-strata-qwen38.service}
+LEASE=${XEMAYA_LEASE:?the GPU lease program: LOCAL.md}
+UNIT=${XEMAYA_PRODUCTION_UNIT:?the production unit that must be inactive: LOCAL.md}
 [ $# -ge 4 ] || { echo "usage: gpu_job.sh NOTE HOST_GIB SECONDS CMD..." >&2; exit 2; }
 note=$1 gib=$2 secs=$3; shift 3
 log=${XEMAYA_JOB_LOG:-$X/logs/gpu_job/safety_guard.log}

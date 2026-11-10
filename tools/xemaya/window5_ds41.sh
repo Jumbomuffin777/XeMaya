@@ -11,10 +11,10 @@
 #   4 GLM-5.3 Maya-S v2 forced along chat-agent (the recurrent checkpoint loop was regrouped for DeepSeek's state)
 # SAFETY: level_zero:0,1 (the B60 is never opened); no long-context run; engines end by themselves (no SIGKILL).
 set -u
-X=/DATA/Projects/xemaya; R=$X/XeMaya; W=${XEMAYA_WINDOW_DIR:-$X/logs/window5}; REF=$R/xemaya/reference; T=$R/tools/xemaya
+X=${XEMAYA_WORK:?the work folder: LOCAL.md}; R=$X/XeMaya; W=${XEMAYA_WINDOW_DIR:-$X/logs/window5}; REF=$R/xemaya/reference; T=$R/tools/xemaya
 E=$X/build-engine
-DS=/mnt/ai/models/ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-Coder-GGUF/IQ2_XXS/DeepSeek-V4.1-Flash-1017-GSQ-RCO-Coder-IQ2_XXS-00001-of-00006.gguf
-GLM=/mnt/ai/models/peasantsmith/GLM-5.3-Flash-Maya-GGUF/Maya-S-v2-IQ2_XXS/GLM-5.3-Flash-Maya-S-v2-IQ2_XXS-00001-of-00003.gguf
+DS=${XEMAYA_MODELS:?the model folder: LOCAL.md}/ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-Coder-GGUF/IQ2_XXS/DeepSeek-V4.1-Flash-1017-GSQ-RCO-Coder-IQ2_XXS-00001-of-00006.gguf
+GLM=${XEMAYA_MODELS:?the model folder: LOCAL.md}/peasantsmith/GLM-5.3-Flash-Maya-GGUF/Maya-S-v2-IQ2_XXS/GLM-5.3-Flash-Maya-S-v2-IQ2_XXS-00001-of-00003.gguf
 FIRST=${1:-1}
 mkdir -p $W
 set +u; source /opt/intel/oneapi/setvars.sh --force >/dev/null 2>&1; set -u
@@ -24,16 +24,16 @@ stop() { say "STOP: $*"; exit 1; }
 # NOTE BUDGET_GIB SECONDS CMD...: the lease, the guard, a memory cap and a time limit around one job
 job() {
   local note=$1 gib=$2 secs=$3; shift 3
-  python3 /DATA/AppData/zability-gpu-lease/gpulease.py run --holder xemaya-dev --memory-budget-gib $gib --note "XeMaya window 5: $note" -- \
+  python3 ${XEMAYA_LEASE:?the GPU lease program: LOCAL.md} run --holder xemaya-dev --memory-budget-gib $gib --note "XeMaya window 5: $note" -- \
     $T/safety_guard.sh --log $W/safety_guard.log -- \
     systemd-run --user --scope -q -p MemoryMax=$((gib + 10))G -p MemorySwapMax=0 nice -n 5 timeout -s TERM $secs "$@"
 }
 kernel_log() { journalctl -k --since "-20 min" --no-pager | grep -E "NETDEV WATCHDOG|Engine reset|Fault response|AER:|oom-kill" && stop "a kernel message above"; return 0; }
-NL=/home/dan/supervisor/NIGHT-LOG.md
+NL=${XEMAYA_SUPERVISOR_DIR:?the supervisor folder: LOCAL.md}/NIGHT-LOG.md
 open_line=$(grep -n "WINDOW [0-9]* OPEN" $NL | tail -1 | cut -d: -f1)
 [ -n "$open_line" ] || stop "no open window in NIGHT-LOG"
 tail -n +$((open_line + 1)) $NL | grep -q "XEMAYA DONE: router restored" && stop "the last window in NIGHT-LOG is closed: the owner opens a new one first"
-bash /DATA/AppData/strata-void-l3/preflight.sh 40 28 28 | tail -1 | grep -q OK || stop "preflight"
+bash ${XEMAYA_PRODUCTION_DIR:?the production folder: LOCAL.md}/preflight.sh 40 28 28 | tail -1 | grep -q OK || stop "preflight"
 
 if [ $FIRST -le 1 ]; then
   say "phase 1: kernel parity"
@@ -63,11 +63,11 @@ if [ $FIRST -le 3 ]; then
   job "ds41 free" 60 2400 $E/strata --native $DS --tokens-file $X/prompts/ds41/coder-mid.ids --greedy --max-context 4096 \
       --layer-split auto --mmap-experts --expert-cache auto --max-new 128 --spec 0 > $W/ds41-free.out 2> $W/ds41-free.err
   grep -E "strata \(|strata plain" $W/ds41-free.err | tail -6
-  python3 /DATA/AppData/zability-gpu-lease/gpulease.py status | grep -E '"name"|"used"' | paste - - | cut -c1-120
+  python3 ${XEMAYA_LEASE:?the GPU lease program: LOCAL.md} status | grep -E '"name"|"used"' | paste - - | cut -c1-120
   kernel_log
 fi
 if [ $FIRST -le 4 ]; then
   say "phase 4: GLM-5.3 forced along chat-agent"
   forced glm-chat-agent $GLM $REF/glm53-maya-s-v2-chat-agent.json $X/prompts/chat-agent.ids 4096
 fi
-say "done: run /home/dan/supervisor/xemaya-window-end.sh, verify Qwen, then record the results in xemaya/STATUS.md"
+say "done: run ${XEMAYA_SUPERVISOR_DIR:?the supervisor folder: LOCAL.md}/xemaya-window-end.sh, verify Qwen, then record the results in xemaya/STATUS.md"

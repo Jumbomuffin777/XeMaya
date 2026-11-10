@@ -593,7 +593,7 @@ bool PlainModel::split_auto_points(std::string& err) {
         strata::gpu::free(g);
         strata::gpu::free(h);
     }
-    // XeMaya: a GPU whose host link is under half the first's (on Zability the B60 behind the chipset, whose one
+    // XeMaya: a GPU whose host link is under half the first's (on the development host the B60 behind the chipset, whose one
     // uplink the 5 GbE NICs, SATA and USB share) is left out of an automatic split unless the GPUs were named
     // (--split-device) or XEMAYA_SLOW_LINK_GPUS=1: streaming the experts its VRAM misses kept that uplink full for
     // minutes in 64K / 128K prompts, and the NIC beside it timed out twice and the host lost its network (2026-11-09)

@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Niko1221 and the Strata contributors
+# SPDX-License-Identifier: MIT
 """#4702 and #4703: a call quoted in a Markdown code form is text, not a call.  A four-backtick fence is closed only by a fence of
 at least four backticks (an inner ``` block stays inside it), and an indented (4-space) code block after a blank line is a quote.
 A call the model writes plainly, or indents inside a paragraph, is still a call.

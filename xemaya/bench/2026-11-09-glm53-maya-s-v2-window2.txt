@@ -1,4 +1,4 @@
-# XeMaya GPU window 2, 2026-11-09 15:39-16:13 UTC: GLM-5.3-Flash Maya-S v2 IQ2_XXS on Zability (B70 + B65 + B60).
+# XeMaya GPU window 2, 2026-11-09 15:39-16:13 UTC: GLM-5.3-Flash Maya-S v2 IQ2_XXS on the development host (B70 + B65 + B60).
 # Raw lines from logs/window2 (bench-*.err/.meta, phase_stats.py, the gpu_window.sh steps). Engine: build-engine at this commit's parent plus the changes it records.
 
 ## gpu_window.sh (correctness)
@@ -191,7 +191,7 @@ strata (glm5-next): load 57.9 s, prompt 2377 tokens 26.18 s (90.8 tok/s), 7 gene
 strata (glm5-next): below the VRAM tier: 0 routed entries read over PCIe; experts taken from RAM 1249, from the files 3246 (119212.1 MB)
 
 ## p2377-1935-logits
-name=p2377-1935-logits rc=0 start=1794240441.978168365 end=1794240531.702162649 nvme_read_GB=103.19 args=--layer-split 19,35 --max-context 4096 --max-new 64 --spec 0 --dump-logits /DATA/Projects/xemaya/logs/window2/p2377-logits.f32
+name=p2377-1935-logits rc=0 start=1794240441.978168365 end=1794240531.702162649 nvme_read_GB=103.19 args=--layer-split 19,35 --max-context 4096 --max-new 64 --spec 0 --dump-logits <work>/logs/window2/p2377-logits.f32
 strata plain: the experts need 80.1 GiB of RAM and 95.7 GiB beside them, 59.0 GiB is available: read in place
 strata plain: 16 MoE layers x 288 experts, 3840 VRAM slots (240 a layer, 25.55 GiB), 15 CPU workers, 27133 MiB free before the tier
 strata plain: 16 MoE layers x 288 experts, 4016 VRAM slots (251 a layer, 26.23 GiB), 15 CPU workers, 27887 MiB free before the tier

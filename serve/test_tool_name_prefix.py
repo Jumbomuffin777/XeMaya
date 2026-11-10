@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Niko1221 and the Strata contributors
+# SPDX-License-Identifier: MIT
 """serve/test_tool_name_prefix.py - #5409: `<function=tools actio>` and the bare `<function=tools>` are a declared tool's call.
 
 Seen live (Qwen3.8-Flash-Next IQ3_S through Pi, after code-mode work that spells its tools `tools.actio(...)`): the model wrote

@@ -33,7 +33,7 @@ def set_arg(args, flag, value):
 
 def vram():
     try:
-        r = subprocess.run([sys.executable, "/DATA/AppData/zability-gpu-lease/gpulease.py", "status"],
+        r = subprocess.run([sys.executable, os.environ["XEMAYA_LEASE"], "status"],
                            capture_output=True, text=True, timeout=20)
         return [{"name": d["name"], "used_mib": d["used"] // 2**20} for d in json.loads(r.stdout)["telemetry"]["devices"]]
     except Exception as e:  # telemetry only

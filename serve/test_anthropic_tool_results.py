@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Niko1221 and the Strata contributors
+# SPDX-FileCopyrightText: 2026 Jumbomuffin777 and the XeMaya contributors
+# SPDX-License-Identifier: LGPL-3.0-or-later AND MIT
 """Anthropic tool_result blocks must follow tool_use_id before the template drops it."""
 import copy
 import http.client

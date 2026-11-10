@@ -5,10 +5,10 @@
 # llama.cpp v0.8.0 (8642541b2) built with GGML_SYCL=OFF, the saved prompt ids, 16 greedy tokens with the top-5
 # probabilities of each step. Low priority, capped, and a watchdog stops it if the host runs short of memory.
 set -u
-X=/DATA/Projects/xemaya
+X=${XEMAYA_WORK:?the work folder: LOCAL.md}
 W=$X/logs/window
 OUT=$X/XeMaya/xemaya/reference
-M=/mnt/ai/models/peasantsmith/GLM-5.3-Flash-Maya-GGUF/Maya-S-v2-IQ2_XXS/GLM-5.3-Flash-Maya-S-v2-IQ2_XXS-00001-of-00003.gguf
+M=${XEMAYA_MODELS:?the model folder: LOCAL.md}/peasantsmith/GLM-5.3-Flash-Maya-GGUF/Maya-S-v2-IQ2_XXS/GLM-5.3-Flash-Maya-S-v2-IQ2_XXS-00001-of-00003.gguf
 S=$X/ref/llama.cpp-v0.8.0/build-cpu/bin/llama-server
 PORT=18996
 mkdir -p "$OUT"

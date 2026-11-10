@@ -21,7 +21,7 @@ Inspected sources and what they offered:
 Why XeStrata:
 
 1. Its kernels are written for Intel GPUs (sub-group and XMX aware) rather than translated from CUDA. The earlier
-   attempt on this host to SYCLomatic-port Maya's DeepSeek engine (`/DATA/AppData/maya-upstream/native-port/AUDIT.md`)
+   attempt on this host to SYCLomatic-port Maya's DeepSeek engine (`<maya-upstream>/native-port/AUDIT.md`)
    stalled on cross-device pointer faults that come from dpct's one-context-per-device model.
 2. It already runs GLM-5.3-Flash natively. Its `glm5_parity` test passes on XeMaya's build (28/28 checks; run on the CPU
    device, see STATUS).
@@ -35,7 +35,7 @@ How the other sources are used:
   `serve/`, and kept only where the serve test suite stays green. `src/dsv41` is a design reference for DeepSeek
   streaming, Engram I/O and expert rules, not code to translate.
 - **llama.cpp** (`src/models/deepseek41.cpp`, `deepseek4.cpp` at master 8642541b2; local copy
-  `/DATA/AppData/maya-upstream/llama.cpp-master-20261029`): the exact reference graph. XeStrata's GLM port is transcribed
+  `<maya-upstream>/llama.cpp-master-20261029`): the exact reference graph. XeStrata's GLM port is transcribed
   from llama.cpp's `glm5-next.cpp` the same way.
 - **Project Maya**: its GGUF quantisations (GLM Maya-S/S24/XS/M/L, DeepSeek Maya-XS/S) and ideas.
 
@@ -58,7 +58,7 @@ oneAPI. intel/llvm DPC++ 7+ still works.
 
 1. Done: the kernels pass `glm5_parity` with icpx. The engine builds. Maya-S v2 uses only types XeStrata has SYCL and CPU
    kernels for (Q6_K, Q8_0, IQ2_XXS, IQ2_S, IQ3_XXS, F32) under arch `glm5-next`.
-2. Model: Maya-S v2 IQ2_XXS (89.8 GiB) in `/mnt/ai/models/peasantsmith/GLM-5.3-Flash-Maya-GGUF/Maya-S-v2-IQ2_XXS/`
+2. Model: Maya-S v2 IQ2_XXS (89.8 GiB) in `<models>/peasantsmith/GLM-5.3-Flash-Maya-GGUF/Maya-S-v2-IQ2_XXS/`
    (sha256-checked download). `setup.py --family glm53` lists Maya-S-v2/S24/XS/M/L, pinned. Its MTP layer is present,
    so XeStrata can draft with it.
 3. Needs GPU (approval): load on B70+B65+B60, then a greedy 16-token check against llama.cpp SYCL on the same file. The
@@ -81,7 +81,7 @@ calls, sustained throughput), then wider correctness, then DeepSeek. Evidence be
 
 ### Milestone 4: DeepSeek-V4.1-Flash
 
-Target files on disk: ISTA-DASLab GSQ-RCO IQ2_XXS (+ Coder) with Engram IQ4_NL (`/mnt/ai/models/ISTA-DASLab/`). Tensor
+Target files on disk: ISTA-DASLab GSQ-RCO IQ2_XXS (+ Coder) with Engram IQ4_NL (`<models>/ISTA-DASLab/`). Tensor
 types are Q8_0, Q5_K, BF16, IQ1_M, IQ2_XXS and F32.
 
 Steps (each with a CPU-device parity test against a host reference transcribed from llama.cpp):

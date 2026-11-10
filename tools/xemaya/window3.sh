@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: LGPL-3.0-or-later
 # XeMaya GPU window 3: GLM-5.3-Flash Maya-S v2 attention, TTFT, long context and agent use. Run inside the whole-host
 # lease with production stopped by the owner:
-#   python3 /DATA/AppData/zability-gpu-lease/gpulease.py run --holder xemaya-dev --memory-budget-gib 60 -- \
+#   python3 <lease>/gpulease.py run --holder xemaya-dev --memory-budget-gib 60 -- \
 #       bash tools/xemaya/window3.sh [FIRST_PHASE]
 # Phases (each logs to logs/window3/; a failure stops the script, nothing is retried or changed in the window):
 #   1 kernel parity on each card (glm5 with the tiled attention and the F32 mixers, ds41, iq) + the attention benchmark
@@ -19,8 +19,8 @@
 # SAFETY (2026-11-09): the B60 is left out of automatic splits (its chipset uplink is the NICs'); no 128K or sustained
 # B60 streaming without the owner's say; every job runs under safety_guard.sh.
 set -u
-X=/DATA/Projects/xemaya; R=$X/XeMaya; W=$X/logs/window3; P=$X/prompts; REF=$R/xemaya/reference
-M=/mnt/ai/models/peasantsmith/GLM-5.3-Flash-Maya-GGUF/Maya-S-v2-IQ2_XXS/GLM-5.3-Flash-Maya-S-v2-IQ2_XXS-00001-of-00003.gguf
+X=${XEMAYA_WORK:?the work folder: LOCAL.md}; R=$X/XeMaya; W=$X/logs/window3; P=$X/prompts; REF=$R/xemaya/reference
+M=${XEMAYA_MODELS:?the model folder: LOCAL.md}/peasantsmith/GLM-5.3-Flash-Maya-GGUF/Maya-S-v2-IQ2_XXS/GLM-5.3-Flash-Maya-S-v2-IQ2_XXS-00001-of-00003.gguf
 E=$X/build-engine/strata
 FIRST=${1:-1}
 mkdir -p $W
@@ -43,7 +43,7 @@ serve() {   # NAME MLA SPEC CONTEXT PLAN_JSON [env...]
   return ${PIPESTATUS[0]}
 }
 say "start (phase $FIRST)"
-bash /DATA/AppData/strata-void-l3/preflight.sh 40 28 28 20 || stop "preflight"
+bash ${XEMAYA_PRODUCTION_DIR:?the production folder: LOCAL.md}/preflight.sh 40 28 28 20 || stop "preflight"
 setsid nohup $X/monitor3.sh > /dev/null 2>&1 < /dev/null &
 
 if [ $FIRST -le 1 ]; then

@@ -5,8 +5,8 @@
 #   gpulease.py run --holder xemaya-dev --memory-budget-gib 60 -- bash bench_run.sh NAME PROMPT_IDS [engine args...]
 # Writes logs/window2/bench-NAME.{out,err,meta}: start/end times and the NVMe sectors read meanwhile.
 set -u
-X=/DATA/Projects/xemaya; W=$X/logs/window2; NAME=$1; P=$2; shift 2
-M=/mnt/ai/models/peasantsmith/GLM-5.3-Flash-Maya-GGUF/Maya-S-v2-IQ2_XXS/GLM-5.3-Flash-Maya-S-v2-IQ2_XXS-00001-of-00003.gguf
+X=${XEMAYA_WORK:?the work folder: LOCAL.md}; W=$X/logs/window2; NAME=$1; P=$2; shift 2
+M=${XEMAYA_MODELS:?the model folder: LOCAL.md}/peasantsmith/GLM-5.3-Flash-Maya-GGUF/Maya-S-v2-IQ2_XXS/GLM-5.3-Flash-Maya-S-v2-IQ2_XXS-00001-of-00003.gguf
 set +u; source /opt/intel/oneapi/setvars.sh --force >/dev/null 2>&1; set -u
 export ZES_ENABLE_SYSMAN=1 SYCL_CACHE_PERSISTENT=1
 s0=$(awk '$3=="nvme0n1"{print $6}' /proc/diskstats); t0=$(date +%s.%N)

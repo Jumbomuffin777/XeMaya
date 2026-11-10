@@ -1,7 +1,7 @@
 #!/bin/bash
 # SPDX-FileCopyrightText: 2026 the XeMaya contributors
 # SPDX-License-Identifier: LGPL-3.0-or-later
-# Runs a GPU test and stops it at the first sign that it is hurting the host (Zability, 2026-11-09: sustained expert
+# Runs a GPU test and stops it at the first sign that it is hurting the host (the development host, 2026-11-09: sustained expert
 # streaming to the B60 behind the chipset starved the RTL8126 NIC beside it - two NETDEV WATCHDOG timeouts - and the host
 # lost its network until it was rebooted).
 #

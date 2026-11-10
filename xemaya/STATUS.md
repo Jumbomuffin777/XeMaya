@@ -9,11 +9,11 @@
 
 
 Updated 2026-11-10 (the hybrid segment, checked on the CPU device; then the handoff of 12:30 UTC: MiniMax-M3.1-Flash on the three Arc cards).
-https://github.com/Jumbomuffin777/XeMaya. Every item below was run on Zability unless marked otherwise.
+https://github.com/Jumbomuffin777/XeMaya. Every item below was run on the development host unless marked otherwise.
 
 ## The hybrid segment and the front-end hooks (2026-11-10, after the handoff below; no GPU was used)
 
-Commit `9d091a92b`. A model's last blocks can run in a **segment worker** on another machine (the owner's Windows PC
+Commit `9d091a92b`. A model's last blocks can run in a **segment worker** on another machine (a Windows PC
 with an RTX 4090 is the target), the boundary's rows over one TCP link. `docs` for the whole feature, with the
 front-end's side, the setup and the remaining work in order: FrontierUI's `docs/HYBRID.md`
 (branch `fable/visual-parity`).
@@ -62,8 +62,8 @@ front-end's side, the setup and the remaining work in order: FrontierUI's `docs/
   do not say. Until the owner says otherwise: no GPU job; and when it goes on, `--mmap-experts` stays on for MiniMax
   and the RAM copy is tried first on one card with a short request.
 
-- **Operations.** Production Qwen (`zability-strata-qwen38.service`) is stopped and masked by the owner: leave it off,
-  do not restore it. The Sonnet supervisor, Hermes and Pi stay parked. GPU work is authorized on B70 + B65 + B60, one
+- **Operations.** Production Qwen (`the production unit`) is stopped and masked by the owner: leave it off,
+  do not restore it. The host's other agents stay parked. GPU work is authorized on B70 + B65 + B60, one
   job at a time through `tools/xemaya/gpu_job.sh` (the lease, the safety guard, a memory cap, a time limit; it
   refuses while the production unit is active or the kernel log has a NIC, GPU, AER or OOM message). The B60 is
   named with `XEMAYA_GPUS=level_zero:0,1,2 XEMAYA_SLOW_LINK_GPUS=1`. No kernel message in any run of this session.
@@ -79,14 +79,14 @@ front-end's side, the setup and the remaining work in order: FrontierUI's `docs/
      with the selection on; score on the matrix engines or a work-group a block;
   3. the prompt profile (`STRATA_PROMPT_PROFILE=1`), then the chunked path's levers as GLM's and DeepSeek's;
   4. serve: MiniMax's chat template and tool calls (`serve/`), the vision encoder and the DSpark drafter
-     (`/mnt/ai/models/minimax-m3.1/{vision,dspark}`, safetensors: not started; Project Maya's `src/mm3/mm3_vision.*`
+     (`<models>/minimax-m3.1/{vision,dspark}`, safetensors: not started; Project Maya's `src/mm3/mm3_vision.*`
      and `mm3_dspark.hpp` are the references);
   5. GLM-5.3 and Qwen3.8 forced checks again (`canon_gu_rows` now applies the experts' SwiGLU limit; the direct
      tiers are shared code): not rerun in this session.
 
 ## MiniMax-M3.1-Flash Maya-S IQ2_XXS on the Arc cards (2026-11-10)
 
-Model: `/mnt/ai/models/minimax-m3.1/Maya-S/` (3 shards, 114 GB; 60 blocks, 3 leading dense, 57 x 128 experts of
+Model: `<models>/minimax-m3.1/Maya-S/` (3 shards, 114 GB; 60 blocks, 3 leading dense, 57 x 128 experts of
 14.3 MiB, 4 used; 64 heads of 128 on 4 K/V heads; the sparse attention: blocks of 128 positions, 16 taken, 1 local).
 The model runs in PlainModel's generic block (`mm_`): qwen3moe's attention, `glm5_router_sigmoid` with the selection
 bias, swiglu-oai (alpha 1.702, limit 7) in the dense FFN, the shared expert and the experts, and the sparse attention
@@ -133,7 +133,7 @@ drive every time under `--mmap-experts`, and the CPU pool took 92% of the decode
 
 Coder GSQ-RCO IQ2_XXS on B70 + B65 + B60 (`--layer-split auto` with `XEMAYA_SLOW_LINK_GPUS=1`: blocks 0-13, 14-28,
 29-39, every expert in VRAM), greedy, forced along the llama.cpp v0.8.0 CPU references. Logs:
-`/DATA/Projects/xemaya/logs/window6/`.
+`<work>/logs/window6/`.
 
 - A layer split now cuts anywhere (`PlainModel::DsCarry`: the closed compressed rows, the last selection and the
   candidate blocks cross a cut with the streams); a stage whose tier holds every expert plans its windows' experts on
@@ -161,7 +161,7 @@ Coder GSQ-RCO IQ2_XXS on B70 + B65 + B60 (`--layer-split auto` with `XEMAYA_SLOW
 
 | F32 mHC mixers (Maya's GLM files) | PlainModel takes F32 `hc_attn_fn` / `hc_ffn_fn` (`upload(..., f32)`): the decode window multiplies them with `f32_gemv_fp32_mmvf_multi` (8 rows a launch), the prompt chunks with `f32_gemm_rows`, F32 throughout as llama.cpp's `mul_mat`. `glm5_parity` checks both products and `glm5_hc_pre` on their mixes against a double-precision host reference (T = 3, 11, 37; worst 1.2e-5) on the CPU device: PASS. A static scan of Maya-S v2's 1,412 tensors finds no other type the loader refuses (MTP experts Q2_K / Q3_K, trunk experts IQ2_XXS / IQ2_S / IQ3_XXS pass `native_expert_supported`). Not yet loaded on a GPU |
 | llama.cpp reference for the window | `xemaya/reference/glm53-maya-s-v2-greedy16.json`: llama.cpp v0.8.0 (8642541b2) built CPU-only (`tools/xemaya/ref_cpu.sh`, no GPU touched), the saved 11-token prompt, 16 greedy tokens with each step's top-5 log-probabilities: " natural selection, genetic variation, and adaptation.\n\nExplanation:\n\nThe three most important ideas". Step 3 is a near-tie (" genetic" -1.552 vs " common" -1.564) |
-| iq_parity fixtures | `tools/iq_fixture.py` wrote all 10 formats to `/DATA/Projects/xemaya/iq_fixture` (rows fetched by range request from the pinned Qwen3.8 GSQ-RCO revision). On the CPU device: **0 failures**, all 10 formats (dequantization exact, products within 9.7e-3 relative, the test's bound 2e-2). The run took about 35 minutes, most of it the OpenCL CPU compiler on the IQ4_NL kernel; a first run with a 15-minute limit timed out there |
+| iq_parity fixtures | `tools/iq_fixture.py` wrote all 10 formats to `<work>/iq_fixture` (rows fetched by range request from the pinned Qwen3.8 GSQ-RCO revision). On the CPU device: **0 failures**, all 10 formats (dequantization exact, products within 9.7e-3 relative, the test's bound 2e-2). The run took about 35 minutes, most of it the OpenCL CPU compiler on the IQ4_NL kernel; a first run with a 15-minute limit timed out there |
 | Element-wise kernels | `elementwise_parity` 0 failures on each Arc card (needs Level Zero; 2026-11-09) |
 | GLM Maya-S v2 files | sha256 of all 3 parts recomputed before the GPU window: match Hugging Face |
 
@@ -169,7 +169,7 @@ Coder GSQ-RCO IQ2_XXS on B70 + B65 + B60 (`--layer-split auto` with `XEMAYA_SLOW
 
 Lease: whole-host `gpulease.py run --holder xemaya-dev` (no `gpu_partitions.py` edit: its `OWNERS` are one-card
 partitions, and a holder not in `OWNERS` takes the whole host). Preflight passed. Script: `tools/xemaya/gpu_window.sh`;
-logs in `/DATA/Projects/xemaya/logs/window/`. Ended by the owner's `xemaya-window-end.sh` (Qwen healthy after 60 s).
+logs in `<work>/logs/window/`. Ended by the owner's `xemaya-window-end.sh` (Qwen healthy after 60 s).
 
 | Step | Result |
 |---|---|
@@ -188,7 +188,7 @@ beforehand on CPU or with a warmed build so the window is spent on XeMaya.
 Owner-approved; production Qwen stopped and the agents parked by the owner. Whole-host lease
 (`gpulease.py run --holder xemaya-dev`), preflight passed, `gpu_partitions.py` untouched. Ended with
 `xemaya-window-end.sh` (Qwen healthy after 60 s). Raw lines of every run:
-`xemaya/bench/2026-11-09-glm53-maya-s-v2-window2.txt`; logs in `/DATA/Projects/xemaya/logs/window2/`.
+`xemaya/bench/2026-11-09-glm53-maya-s-v2-window2.txt`; logs in `<work>/logs/window2/`.
 
 Model: GLM-5.3-Flash Maya-S v2 IQ2_XXS (89.8 GiB, sha256-checked). Engine: `build-engine` (icpx 2026.2, JIT SPIR-V,
 `SYCL_CACHE_PERSISTENT=1`), `--max-context 4096`, greedy, one process per run (load not included in the speeds).
@@ -269,8 +269,7 @@ NVMe during the prompt.
 - **2026-11-10 03:54 UTC: DeepSeek-V4.1 runs natively on the B70 + B65** (window 5, the section below this handoff).
   Steps 1 and 2 of the list here are done; step 3 (the chunked prompt path) is next.
 - **No GPU window is open.** Window 4 was closed at 22:50 UTC (production Qwen healthy, lease `qwen38-strata-iq3s`).
-  The Sonnet supervisor, Hermes and Pi agents are PARKED by the owner (HOLD at the top of `/home/dan/supervisor/CLAUDE.md`):
-  do not run `supervisor/start.sh`. A new window needs the owner's word; then B70 + B65 only, every job under
+  The host's other agents are parked by the owner. A new window needs the owner's word; then B70 + B65 only, every job under
   `tools/xemaya/safety_guard.sh`, preflight, the lease (`window4_qwen.sh` shows the form).
 - **DeepSeek-V4.1 is the main line.** Done and pushed: `src/reference/ds41_host.cpp` (the whole model on the host, the
   oracle), `src/core/plain_ds41.cpp` (the block in PlainModel), the state kernels in `ds41.hpp`, IQ1_M down rows.
@@ -285,14 +284,14 @@ NVMe during the prompt.
 - **Qwen3.8:** benchmarked (below). XeMaya equals XeStrata 0.2.2 and trails upstream Strata v0.2.12 by 17% in prefill.
   The lever found: `STRATA_PREFILL_MMQ=0` (+7%); making it the measured default for 8K chunks is open work.
 - Tools of this window: `tools/xemaya/{qwen_bench.py, make_qwen_prompts.py, window4_qwen.sh, qwen_report.py,
-  ref_ds41.sh}`; raw results `xemaya/benchmarks/2026-11-09-window4-qwen/` and `/DATA/Projects/xemaya/logs/window4/`.
+  ref_ds41.sh}`; raw results `xemaya/benchmarks/2026-11-09-window4-qwen/` and `<work>/logs/window4/`.
 
 ## GPU window 5: DeepSeek-V4.1-Flash's first runs on Arc (2026-11-10 03:35-03:54 UTC)
 
 Owner-authorized (60 minutes, deadline guard at 04:26); B70 + B65 only (`level_zero:0,1`), every job under the lease and
 `safety_guard.sh`; no kernel message (NIC watchdog, engine reset, AER, OOM) during the window. Closed with
 `xemaya-window-end.sh` at 03:54 (Qwen loaded after 54 s, lease `qwen38-strata-iq3s`); the agents stayed parked. Logs:
-`/DATA/Projects/xemaya/logs/window5/`. Engine: `build-engine` (icpx 2026.2), `--layer-split auto` (B70 blocks 0-19, B65
+`<work>/logs/window5/`. Engine: `build-engine` (icpx 2026.2), `--layer-split auto` (B70 blocks 0-19, B65
 20-39; 20 MoE layers each, 172 and 156 slots a layer of 192), `--mmap-experts`, `--spec 0`, greedy.
 
 **Correctness** (Coder GSQ-RCO IQ2_XXS, forced along the llama.cpp v0.8.0 CPU references):
@@ -413,8 +412,8 @@ regrouped for the DeepSeek state: GLM's forced check must be repeated in the nex
   appears in the journal. XeMaya's last job (`window3.sh`) had finished and unloaded at 18:41:46, 3.6 minutes before
   the reset; the GPUs were idle.
 - **The network:** `eno1` (RTL8126, r8169) logged a transmit timeout at 17:49:58 and at 18:29:25 (during the 64K and
-  128K runs). It **recovered** after 18:29: SSH logins over Tailscale succeeded at 18:31:48 and 18:32:35. The final
-  loss began at 18:37:09 (DNS queries failing even to the gateway 192.168.1.1, Tailscale without UDP, then "network
+  128K runs). It **recovered** after 18:29: remote logins succeeded at 18:31:48 and 18:32:35. The final
+  loss began at 18:37:09 (DNS queries failing even to the gateway, then "network
   is unreachable"), with **no** kernel message and no link change, while XeMaya's agent session was running with the
   B60 loaded (its copy engine busy in bursts) and about 30 s before XeMaya reloaded the model. The earlier STATUS text
   ("clean shutdown 18:45:12", "unreachable from 18:29") was wrong on both points and is corrected here.
@@ -428,10 +427,10 @@ regrouped for the DeepSeek state: GLM's forced check must be repeated in the nex
   ping), engines are not SIGKILLed. Not validated: that the B60 is the cause (that needs a deliberate, owner-run
   test), and the guard cannot restore a NIC that has already stalled.
 
-## Incident, 2026-11-09 18:29-18:46 UTC: Zability lost its network during window 3 (read this first)
+## Incident, 2026-11-09 18:29-18:46 UTC: the development host lost its network during window 3 (read this first)
 
 - **What happened:** the onboard RTL8126 5 GbE NIC (`eno1`, r8169 driver) logged `NETDEV WATCHDOG: transmit queue 0
-  timed out` at 17:49:58 and 18:29:25, Tailscale then lost every path, and the host stayed unreachable until it was
+  timed out` at 17:49:58 and 18:29:25, the host then lost every path, and stayed unreachable until it was
   rebooted (clean shutdown 18:45:12). No kernel panic, no OOM, no GPU fault at the end.
 - **Cause (most likely, from evidence):** those are the only two NIC timeouts in five boots (4 days), and they fall in
   XeMaya's two heaviest runs: the 64K prompt (17:44-17:50) and the 128K prompt (18:20-18:31). The B60 (0e:00.0) is the
@@ -444,7 +443,7 @@ regrouped for the DeepSeek state: GLM's forced check must be repeated in the nex
   Qwen (healthy after 60 s) at 18:48.
 - **Changes so it does not happen again:**
   1. `--layer-split auto` leaves a GPU on a slow host link (under half the first GPU's) out of the split unless it is
-     named (`--split-device`) or `XEMAYA_SLOW_LINK_GPUS=1`: on Zability XeMaya runs on the B70 + B65 by default (window 2:
+     named (`--split-device`) or `XEMAYA_SLOW_LINK_GPUS=1`: on the development host XeMaya runs on the B70 + B65 by default (window 2:
      same prefill, decode 12.5 vs 13.9 tok/s).
   2. `tools/xemaya/safety_guard.sh` wraps every GPU job in the window scripts: it stops the job at a NIC watchdog, a GPU
      engine reset or fault, an OOM kill, a hung task, an NVMe timeout, a PCIe AER error, three missed gateway pings or
@@ -458,7 +457,7 @@ regrouped for the DeepSeek state: GLM's forced check must be repeated in the nex
 ## GPU window 3: GLM attention, TTFT, long context, agent use (2026-11-09 17:00-18:3x UTC)
 
 Owner-approved; production stopped and the agents parked by the owner. B70 + B65 + B60, `--layer-split auto`, Maya-S v2
-IQ2_XXS. Logs: `/DATA/Projects/xemaya/logs/window3/`. The XMX attention was written, tested and adopted in the window.
+IQ2_XXS. Logs: `<work>/logs/window3/`. The XMX attention was written, tested and adopted in the window.
 
 **Correctness.** Kernel parity on each card (glm5 incl. tiled, ds41, iq): PASS. `glm5_mla_attn_xmx` against a
 double-precision reference on the B70 and the B60: worst 1.3e-7. Forced along the llama.cpp v0.8.0 CPU references:
@@ -528,14 +527,14 @@ finer GPU-side profile first.
 ## In progress or not started
 
 - **GLM Maya-S v2 download:** shard 1 is verified, shard 2 is downloading (log
-  `/DATA/Projects/xemaya/logs/fetch-glm-maya-s-v2.log`). Resume with
+  `<work>/logs/fetch-glm-maya-s-v2.log`). Resume with
   `tools/xemaya/fetch_hf.sh peasantsmith/GLM-5.3-Flash-Maya-GGUF Maya-S-v2-IQ2_XXS
-  /mnt/ai/models/peasantsmith/GLM-5.3-Flash-Maya-GGUF/Maya-S-v2-IQ2_XXS 50M`. Verified files are skipped.
+  <models>/peasantsmith/GLM-5.3-Flash-Maya-GGUF/Maya-S-v2-IQ2_XXS 50M`. Verified files are skipped.
 - **The DeepSeek-V4.1 block in PlainModel:** see PLAN, Milestone 4, for the design. Not started.
 - **Remaining upstream serve commits:** these conflict with XeStrata's rewritten `server.py` and need hand ports: request
   lifecycle (#4271, #4479, #4738, #4792, #5044, #3443, #3961, #2518, #4451), answers one request late (9aea047ee,
   engine side too), fatal GPU error restart (#4350, engine side too), Anthropic context-overflow wording (247397800),
-  `undeclared_tool_calls` (75acfca32), deferred tool loading (9efac55f5). The runner `/DATA/Projects/xemaya/conf.py`
+  `undeclared_tool_calls` (75acfca32), deferred tool loading (9efac55f5). The runner `<work>/conf.py`
   shows a commit's conflicts and records resolutions.
 - **`setup.py` still refuses icpx** and builds its own engine with intel/llvm. Until that changes, run the engine built
   by CMake (AGENTS.md) or build intel/llvm with `tools/intel_llvm_build.py` (heavy; capped jobs only).
@@ -549,7 +548,6 @@ finer GPU-side profile first.
 
 ## Notes
 
-- `gh` on the Windows PC is not logged in. `gh` on Zability is (Jumbomuffin777) and is what this work used.
-- There is no passwordless sudo on Zability.
+- `gh` on the Windows PC is not logged in. `gh` on the development host is (Jumbomuffin777) and is what this work used.
 - Upstream history includes a 68 MB `src2.tar`. GitHub warns but the push succeeds; history is not rewritten.
 - Commit identity is repo-local: `Jumbomuffin777 <ID+Jumbomuffin777@users.noreply.github.com>`.

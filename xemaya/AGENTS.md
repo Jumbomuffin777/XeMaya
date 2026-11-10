@@ -1,3 +1,7 @@
+<!--
+SPDX-FileCopyrightText: 2026 Jumbomuffin777 and the XeMaya contributors
+SPDX-License-Identifier: LGPL-3.0-or-later
+-->
 # XeMaya: notes for coding agents
 
 Read this, then `PLAN.md` and `STATUS.md` (same folder). The repository's root `AGENTS.md` is XeStrata's and still
@@ -6,42 +10,42 @@ file overrides it.
 
 ## Production safety (non-negotiable)
 
-Zability serves production Qwen3.8 on the B70 + B65 through Strata 0.2.12 (`zability-strata-qwen38.service`). Hermes
-coding agents depend on it.
+The development host also serves a production model on the B70 + B65 through Strata 0.2.12, and other work depends
+on it. The host's names, folders, units and tools are in `LOCAL.md` (git ignores it; the root `AGENTS.md` says what
+goes there); the placeholders below (`<work>`, `<production>`, `<lease>`, `<models>`) are its entries.
 
 - Never stop, restart or reconfigure production services, profiles, binaries or model files
-  (`/DATA/AppData/strata-void-l3/...`). Read them only.
-- Never run GPU work outside the lease (`/DATA/AppData/zability-gpu-lease/gpulease.py`) and preflight
-  (`/DATA/AppData/strata-void-l3/preflight.sh`). Never edit those tools. While production holds the whole-host lease,
-  only the owners in `gpu_partitions.py` (`comfyui`, `marrow-qa` on the B60) may claim a card. XeMaya has no owner yet:
-  GPU tests wait for the owner's approval.
+  (`<production>/...`). Read them only.
+- Never run GPU work outside the lease (`<lease>/gpulease.py`) and preflight
+  (`<production>/preflight.sh`). Never edit those tools. While production holds the whole-host lease,
+  only the owners its partition table names may claim a card. XeMaya has no owner there: GPU tests wait for the
+  owner's approval.
 - Earlier DeepSeek tests on this host caused two host OOMs that killed production services. Run every build and test
   under `systemd-run --user --scope -p MemoryMax=... -p MemorySwapMax=0 nice -n 19 ionice -c3`, with `ninja -j4`.
-- No changes to networking, Docker, Hermes, FrontierUI, MARROW or firewall.
+- No changes to the host's networking, containers, firewall or other services.
 - **Host stability (2026-11-09 incident, STATUS.md):** the B60 sits behind the chipset with both NICs; sustained
   streaming to it made the NIC time out and the host lose its network. Do not use the B60 for XeMaya unless the owner
   says so (`--layer-split auto` now leaves it out). Run every GPU job under `tools/xemaya/safety_guard.sh`. Never
   SIGKILL an engine in the middle of GPU work (QUIT, Ctrl-C, SIGTERM and wait). Check `journalctl -k` for
   `NETDEV WATCHDOG` and `xe ... Engine reset` after any GPU run, and stop at the first one. Think through PCIe, disk,
   memory and network load before a long run, and keep long-context runs short and few.
-- Nothing is published or pushed to anyone else's repository. Pushing to the private `Jumbomuffin777/XeMaya` is allowed.
+- Nothing is pushed to anyone else's repository. Pushing to `Jumbomuffin777/XeMaya` is allowed.
 
 ## Where things are
 
 | What | Where |
 |---|---|
-| Repo (branch `xemaya/main`, pushes to `origin main`) | `/DATA/Projects/xemaya/XeMaya` |
-| Remotes | `origin` = Jumbomuffin777/XeMaya (private), `xestrata` = MistVVK/XeStrata, `strata` = Niko1221/Strata |
-| Maya reference | `/DATA/Projects/xemaya/ref/project-maya` |
-| llama.cpp reference graphs (read only) | `/DATA/AppData/maya-upstream/llama.cpp-master-20261029/src/models/{deepseek41,deepseek4,glm5-next}.cpp` |
-| Builds | `/DATA/Projects/xemaya/build-icpx` (tests, no ggml), `/DATA/Projects/xemaya/build-engine` (the `strata` engine) |
-| Python venv for serve tests | `/DATA/Projects/xemaya/venv` |
-| Logs | `/DATA/Projects/xemaya/logs`, `/DATA/Projects/xemaya/*.log` |
-| Models | `/mnt/ai/models/ISTA-DASLab/` (DeepSeek, Qwen), `/mnt/ai/models/peasantsmith/GLM-5.3-Flash-Maya-GGUF/` (GLM) |
-| Prior Intel work and its lessons | `/DATA/AppData/maya-upstream/README.md`, `native-port/AUDIT.md` |
+| Repo (branch `xemaya/main`, pushes to `origin main`) | `<work>/XeMaya` |
+| Remotes | `origin` = Jumbomuffin777/XeMaya, `xestrata` = MistVVK/XeStrata, `strata` = Niko1221/Strata |
+| Maya reference | `<work>/ref/project-maya` |
+| llama.cpp reference graphs (read only) | `<maya-upstream>/llama.cpp-master-20261029/src/models/{deepseek41,deepseek4,glm5-next}.cpp` |
+| Builds | `<work>/build-icpx` (tests, no ggml), `<work>/build-engine` (the `strata` engine) |
+| Python venv for serve tests | `<work>/venv` |
+| Logs | `<work>/logs`, `<work>/*.log` |
+| Models | `<models>/ISTA-DASLab/` (DeepSeek, Qwen), `<models>/peasantsmith/GLM-5.3-Flash-Maya-GGUF/` (GLM) |
+| Prior Intel work and its lessons | `<maya-upstream>/README.md`, `native-port/AUDIT.md` |
 
-Access: from the Windows PC, `ssh zability` works directly. `gh` is authenticated on Zability (Jumbomuffin777), not on
-Windows. Send scripts with `scp` and run them. PowerShell mangles `$(...)` inside double-quoted ssh arguments.
+Access to the development host and where `gh` is authenticated: `LOCAL.md`.
 
 ## Build and test
 
@@ -63,18 +67,18 @@ The same for DeepSeek: `ONEAPI_DEVICE_SELECTOR=opencl:cpu XEMAYA_CPU_DEVICE=1 bu
 model's tensors: `build-icpx/ds41_manifest_test <any shard>`.
 
 Serve tests: `venv/bin/python -m pytest -q -p no:cacheprovider serve` (930 passed, 23 skipped after the ports).
-Porting an upstream serve commit: `python3 /DATA/Projects/xemaya/conf.py show <commit>` prints its conflict hunks,
+Porting an upstream serve commit: `python3 <work>/conf.py show <commit>` prints its conflict hunks,
 `resolve <spec.json>` applies per-hunk choices (`ours`, `theirs`, `both`, or `{"text": ...}`), and `finish <commit>
 [tests]` runs the commit's tests plus the listed ones and commits only if they pass.
 
 GPU windows (owner-approved, production stopped by the owner): `tools/xemaya/gpu_window.sh` under
 `gpulease.py run --holder xemaya-dev` (STATUS.md has the command); it compares against a reference made beforehand on
-the CPU with `tools/xemaya/ref_cpu.sh` (llama.cpp v0.8.0 built CPU-only in `/DATA/Projects/xemaya/ref/llama.cpp-v0.8.0`)
-through `tools/xemaya/compare_ref.py`. `iq_parity` reads its fixtures from `/DATA/Projects/xemaya/iq_fixture`
+the CPU with `tools/xemaya/ref_cpu.sh` (llama.cpp v0.8.0 built CPU-only in `<work>/ref/llama.cpp-v0.8.0`)
+through `tools/xemaya/compare_ref.py`. `iq_parity` reads its fixtures from `<work>/iq_fixture`
 (`tools/iq_fixture.py`); on the CPU device it takes ~35 minutes.
 
-GLM serving pieces: the tokenizer folder `/DATA/Projects/xemaya/serve-glm/tok/tokenizer` (from
-`tools/strata_tokenizer.py`), the window prompts in `/DATA/Projects/xemaya/prompts` (`tools/xemaya/make_prompts.py`).
+GLM serving pieces: the tokenizer folder `<work>/serve-glm/tok/tokenizer` (from
+`tools/strata_tokenizer.py`), the window prompts in `<work>/prompts` (`tools/xemaya/make_prompts.py`).
 `XEMAYA_MLA_ATTN=tiled` selects the tiled DSA attention; `XEMAYA_PROMPT_CHECKPOINT=0` turns the prompt-end
 checkpoint off. `tools/xemaya/engine_serve.py` drives a loaded engine with many requests (one load per window phase).
 
@@ -84,7 +88,8 @@ Model shape as the engine reads it: `build-icpx/model_spec_test FILE.gguf`.
 ## Conventions
 
 - XeMaya commit messages are in English. Commit one logical change at a time, and say in the message what was checked.
-- New XeMaya files carry `SPDX-FileCopyrightText: 2026 the XeMaya contributors` and
-  `SPDX-License-Identifier: LGPL-3.0-or-later`. Code transcribed from llama.cpp names the commit and its MIT licence.
+- New XeMaya files carry the SPDX header of the root `AGENTS.md` with the holder `2026 Jumbomuffin777 and the XeMaya
+  contributors` (earlier files say `2026 the XeMaya contributors`) under the LGPL, version 3 or later. Code
+  transcribed from llama.cpp names the commit and its MIT licence.
 - Mark anything not run on real hardware `unverified` in STATUS.md. Never report a measurement that was not taken.
 - Keep STATUS.md current before ending a session.

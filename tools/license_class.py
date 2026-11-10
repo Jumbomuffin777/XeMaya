@@ -29,6 +29,7 @@ import tomllib
 from pathlib import Path
 
 XE = "2026 MistVVK and the XeStrata contributors"
+XM = "XeMaya contributors"      # XeMaya's own holder lines ("2026 the XeMaya contributors", "2026 Jumbomuffin777 and ...")
 STRATA = "2026 Niko1221 and the Strata contributors"
 # copyright holders whose code is under a permissive license XeStrata's files may carry (AGENTS.md, Licenses);
 # all of them MIT (Expat)
@@ -111,12 +112,22 @@ class Upstream:
     def base(self, path: str, data: bytes) -> bytes | None:
         """upstream's content of the file, or None when the file is not upstream's."""
         if path in self.blob:
-            return self.data[self.blob[path]]
+            base = self.data[self.blob[path]]
+            if strip(base) != strip(data):      # brought whole from Strata's main since the tag (below): unchanged
+                r = subprocess.run(["git", "show", f"strata/main:{path}"], capture_output=True)
+                if r.returncode == 0 and strip(r.stdout) == strip(data):
+                    return r.stdout
+            return base
         p = self.by_hash.get(hashlib.sha256(strip(data)).hexdigest())
         if p:
             return self.data[self.blob[p]]
         if STRATA not in holders_and_id(data)[0]:
             return None
+        # XeMaya ports Strata's later server commits selectively: a file that is not at the tag is compared with
+        # Strata's main where the `strata` remote is fetched (xemaya/AGENTS.md)
+        r = subprocess.run(["git", "show", f"strata/main:{path}"], capture_output=True)
+        if r.returncode == 0:
+            return r.stdout
         # deleted upstream before the tag: the content of the last commit that had it
         last = git("log", "-1", "--format=%H", self.tag, "--", path).decode().strip()
         for rev in (last, last + "^") if last else ():
@@ -142,11 +153,14 @@ def expected(path: str, data: bytes, hs: list[str], up: Upstream) -> tuple[str, 
         base = None  # written anew at upstream's path (AGENTS.md)
     if base is None:
         perm = [h for h in hs if h != XE and any(k in h for k in PERMISSIVE)]
-        return ("own", hs if XE in hs else hs + [XE], MIXED if perm else OWN)
+        # a file written for XeMaya names XeMaya's holder; XeStrata's line is added only where neither is there
+        return ("own", hs if XE in hs or any(XM in h for h in hs) else hs + [XE], MIXED if perm else OWN)
     bhs, bid = holders_and_id(base)
     others = [h for h in hs if h != XE] or bhs or [STRATA]
     if base and strip(data) == strip(base):
         return ("unchanged", others, bid or "MIT")
+    if any(XM in h for h in others):    # changed by XeMaya alone: its line stands for the LGPL part
+        return ("mixed", others + ([XE] if XE in hs else []), MIXED)
     return ("mixed", others + [XE], MIXED)
 
 

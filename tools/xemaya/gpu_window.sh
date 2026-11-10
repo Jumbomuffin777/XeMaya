@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: 2026 the XeMaya contributors
 # SPDX-License-Identifier: LGPL-3.0-or-later
 # XeMaya's GPU window: run inside the whole-host lease, with production stopped by the owner:
-#   python3 /DATA/AppData/zability-gpu-lease/gpulease.py run --holder xemaya-dev --memory-budget-gib 60 -- \
+#   python3 <lease>/gpulease.py run --holder xemaya-dev --memory-budget-gib 60 -- \
 #       bash tools/xemaya/gpu_window.sh
 # 1. kernel parity on each card (glm5_parity with the F32 mixer checks, ds41_parity): a failure stops the window
 # 2. GLM-5.3-Flash Maya-S v2 on B70 + B65 + B60 (--layer-split auto), forced along the saved llama.cpp reference's 16
@@ -13,10 +13,10 @@
 # 5. the speed test: 128 tokens with the MTP layer's drafts (--spec 3)
 # Any other failure stops the script (no step is retried or changed in the window). Logs: logs/window2/.
 set -u
-X=/DATA/Projects/xemaya
+X=${XEMAYA_WORK:?the work folder: LOCAL.md}
 R=$X/XeMaya
 W=$X/logs/window2
-M=/mnt/ai/models/peasantsmith/GLM-5.3-Flash-Maya-GGUF/Maya-S-v2-IQ2_XXS/GLM-5.3-Flash-Maya-S-v2-IQ2_XXS-00001-of-00003.gguf
+M=${XEMAYA_MODELS:?the model folder: LOCAL.md}/peasantsmith/GLM-5.3-Flash-Maya-GGUF/Maya-S-v2-IQ2_XXS/GLM-5.3-Flash-Maya-S-v2-IQ2_XXS-00001-of-00003.gguf
 REF=$R/xemaya/reference/glm53-maya-s-v2-greedy16.json
 E=$X/build-engine/strata
 mkdir -p "$W"
@@ -24,10 +24,10 @@ set +u; source /opt/intel/oneapi/setvars.sh --force >/dev/null 2>&1; set -u
 export ZES_ENABLE_SYSMAN=1
 export SYCL_CACHE_PERSISTENT=1   # the engine is JIT-compiled (no -fsycl-targets): later runs reuse the first run's binaries
 cap() { systemd-run --user --scope -q -p MemoryMax=$1 -p MemorySwapMax=0 nice -n 5 "${@:2}"; }
-vram() { python3 /DATA/AppData/zability-gpu-lease/gpulease.py status | python3 -c 'import json,sys; t=json.load(sys.stdin)["telemetry"]["devices"]; print(" | ".join("%s %.1f GiB" % (d["name"].split()[-2], d["used"]/2**30) for d in t))'; }
+vram() { python3 ${XEMAYA_LEASE:?the GPU lease program: LOCAL.md} status | python3 -c 'import json,sys; t=json.load(sys.stdin)["telemetry"]["devices"]; print(" | ".join("%s %.1f GiB" % (d["name"].split()[-2], d["used"]/2**30) for d in t))'; }
 stop() { echo "== $(date -u +%T) STOP: $*"; echo "VRAM: $(vram)"; exit 1; }
 echo "== $(date -u +%T) start"
-bash /DATA/AppData/strata-void-l3/preflight.sh 40 28 28 20 || stop "preflight"
+bash ${XEMAYA_PRODUCTION_DIR:?the production folder: LOCAL.md}/preflight.sh 40 28 28 20 || stop "preflight"
 python3 -c "import json; print(','.join(map(str, json.load(open('$REF'))['tokens'])))" > "$W/ref.ids" || stop "reference"
 python3 -c "import json; print(','.join(map(str, json.load(open('$REF'))['prompt_ids'])))" > "$W/prompt.ids" || stop "prompt"
 echo "prompt $(cat $W/prompt.ids); reference $(cat $W/ref.ids)"

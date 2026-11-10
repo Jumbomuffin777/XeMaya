@@ -13,7 +13,7 @@ SPDX-License-Identifier = "LGPL-3.0-or-later AND MIT"
 
 # upstream Strata's files without a comment of their own, unchanged (AGENTS.md, Licenses)
 [[annotations]]
-path = ["data/draft_vocab*.bin", "data/expert-profile.bin", "data/expert-profile-coder.bin", "data/quant_quality/v1/**", "docs/paper/**", "serve/fixtures/rcall_specimens.json", "serve/web/favicon.svg", "tests/data/native_experts/**"]
+path = ["data/draft_vocab*.bin", "data/expert-profile.bin", "data/expert-profile-coder.bin", "data/quant_quality/v1/**", "docs/paper/**", "serve/fixtures/rcall_specimens.json", "serve/fixtures/deepseek41/**", "serve/web/favicon.svg", "tests/data/native_experts/**"]
 SPDX-FileCopyrightText = "2026 Niko1221 and the Strata contributors"
 SPDX-License-Identifier = "MIT"
 
@@ -149,3 +149,10 @@ SPDX-License-Identifier = "BSD-2-Clause"
 path = ["third_party/main/dlpack/LICENSE"]
 SPDX-FileCopyrightText = "The DLPack contributors"
 SPDX-License-Identifier = "Apache-2.0"
+
+# XeMaya's own records without a comment of their own: the status and plan, the reference token sets and the
+# recorded benchmark runs
+[[annotations]]
+path = ["xemaya/PLAN.md", "xemaya/STATUS.md", "xemaya/bench/**", "xemaya/benchmarks/**", "xemaya/reference/**"]
+SPDX-FileCopyrightText = "2026 Jumbomuffin777 and the XeMaya contributors"
+SPDX-License-Identifier = "LGPL-3.0-or-later"

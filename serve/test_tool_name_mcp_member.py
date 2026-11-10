@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Niko1221 and the Strata contributors
+# SPDX-License-Identifier: MIT
 """serve/test_tool_name_mcp_member.py - #5281: a namespaced MCP tool called by its last segment is that tool.
 
 Seen live (Qwen3.8-Flash-Next Q2_0 under DeepSeek Harness, stream): the request declared `mcp__assets__get_asset_info` and

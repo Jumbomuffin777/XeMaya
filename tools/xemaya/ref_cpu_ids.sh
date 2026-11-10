@@ -8,10 +8,10 @@
 # watchdog that stops it if the host's MemAvailable falls under 14 GiB.
 set -u
 NAME=$1; IDS=$2; NP=$3
-X=/DATA/Projects/xemaya
+X=${XEMAYA_WORK:?the work folder: LOCAL.md}
 OUT=$X/XeMaya/xemaya/reference
 LOG=$X/logs/ref-$NAME
-M=/mnt/ai/models/peasantsmith/GLM-5.3-Flash-Maya-GGUF/Maya-S-v2-IQ2_XXS/GLM-5.3-Flash-Maya-S-v2-IQ2_XXS-00001-of-00003.gguf
+M=${XEMAYA_MODELS:?the model folder: LOCAL.md}/peasantsmith/GLM-5.3-Flash-Maya-GGUF/Maya-S-v2-IQ2_XXS/GLM-5.3-Flash-Maya-S-v2-IQ2_XXS-00001-of-00003.gguf
 S=$X/ref/llama.cpp-v0.8.0/build-cpu/bin/llama-server
 PORT=${PORT:-18996}
 NT=$(tr ',' '\n' < "$IDS" | grep -c .)
