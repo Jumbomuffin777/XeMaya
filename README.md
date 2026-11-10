@@ -6,17 +6,25 @@ SPDX-License-Identifier: LGPL-3.0-or-later AND MIT
 -->
 # XeMaya
 
-**An Intel Arc-first, native inference engine for today's large open mixture-of-experts models:
-Qwen3.8-Flash-Next, GLM-5.3-Flash and DeepSeek-V4.1-Flash.**
+**Native inference for Intel Arc. Built on XeStrata. Targeting Project Maya's models.**
 
-XeMaya runs these models directly on Intel Arc GPUs through SYCL and Level Zero, with kernels written for Intel's
-hardware (Xe2 / Battlemage first) rather than translated from CUDA. It is not a llama.cpp wrapper and not a CUDA
-compatibility layer. The goal is an open, efficient engine that gets everything Arc GPUs can give, on one card or
-several, with performance competitive with native CUDA/HIP engines wherever the hardware allows.
+[![Status: experimental](https://img.shields.io/badge/status-experimental-orange)](xemaya/STATUS.md)
+[![Backend: SYCL / Level Zero](https://img.shields.io/badge/backend-SYCL%20%2F%20Level%20Zero-blue)](docs/XE.md)
+[![Licence: LGPL v3+](https://img.shields.io/badge/licence-LGPL--3.0--or--later-blue)](COPYING.LESSER)
+[![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-Jumbomuffin777-FFDD00?logo=buymeacoffee&logoColor=000)](https://buymeacoffee.com/Jumbomuffin777)
 
-> **Status: early development.** GLM-5.3-Flash and DeepSeek-V4.1-Flash run natively on Arc GPUs and agree with
-> llama.cpp on the checked prompts, but neither is production-ready (few prompts checked, DeepSeek's prompt path is
-> slow, no API soak). Qwen3.8-Flash-Next support is inherited from XeStrata. See [Status](#status) and the [roadmap](#roadmap).
+[Models](#models) · [Recorded results](#status) · [Build](#building) ·
+[Model discovery](#model-discovery-and-serving) · [Documentation](DOCUMENTATION.md) · [Changelog](CHANGELOG.md)
+
+XeMaya is an Intel Arc-first inference engine for Qwen3.8-Flash-Next, GLM-5.3-Flash,
+DeepSeek-V4.1-Flash and experimental MiniMax-M3.1-Flash. It runs native SYCL / Level Zero kernels,
+including Intel XMX paths, with multi-GPU layer splitting and VRAM / RAM / SSD expert tiers.
+The engine is built on XeStrata, rather than a llama.cpp server wrapper or a CUDA compatibility layer.
+
+> **Early development — snapshot: 2026-11-10, source `b59488e2d`.** Reference agreement is limited
+> to the models, prompts and hardware recorded below; it does not establish production readiness.
+> MiniMax's RAM-copy run triggered a GPU engine reset; the cause is undetermined and development GPU
+> work was stopped. See the latest [status handoff](xemaya/STATUS.md) before running development jobs.
 
 ## Where XeMaya comes from
 
@@ -33,82 +41,111 @@ the correctness oracle in tests; it is not XeMaya's backend.
 
 ## Models
 
-| Model | Size | Formats | State in XeMaya |
-| --- | --- | --- | --- |
-| **Qwen3.8-Flash-Next** | 125B MoE | XeStrata's GGUFs (ISTA-DASLab GSQ-RCO, Swift 1.5, Coder, Gyro, Unsloth) | Runs (inherited from XeStrata) |
-| **GLM-5.3-Flash** | 320B MoE (18B active) | Project Maya GGUFs (Maya-S v2, S24, XS, M, L) | Runs on Arc (B70 + B65 + B60); checked against llama.cpp on four prompts; tuning |
-| **DeepSeek-V4.1-Flash** | 748B MoE | ISTA-DASLab GSQ-RCO and Coder, Maya-XS / S | Runs on Arc (B70 + B65): the Coder file checked against llama.cpp on two prompts; the prompt path is not chunked yet (slow prefill) |
+| Model | Implemented path / files | Recorded qualification and limits |
+| --- | --- | --- |
+| **Qwen3.8-Flash-Next** | Inherited XeStrata path; `qwen4exp` GGUF architecture | Benchmarked on B70 + B65; tools, reasoning and drafting advertised by the catalog. Direct-tier changes made later still need a fresh GPU check. |
+| **GLM-5.3-Flash** | `glm5-next`; setup lists Maya-S v2 / S24 / XS / M / L | Maya-S v2 checked on B70 + B65 + B60; 126/128 forced tokens on the chat-agent reference. A seven-turn tool session ran through the server. This is not validation of every listed quantisation. |
+| **DeepSeek-V4.1-Flash** | `deepseek41`; compressed attention, Engram, chunked prefill and XMX attention | Coder GSQ-RCO IQ2_XXS: 16/16 forced tokens on both saved references on three GPUs. Full 384-expert file previously generated on two GPUs, without reference comparison. DeepSeek tool-call format, qualified thinking and drafting are absent from the catalog. |
+| **MiniMax-M3.1-Flash** | `minimax-m3`; sparse attention and SwiGLU-OAI; Maya-S IQ2_XXS | Experimental: 32/32 forced tokens for a 211-token chat prompt; 28/32 for a 3,832-token prompt. About 2–4 tok/s decode in recorded runs. Tools, vision and DSpark drafting are not implemented/qualified; no end-to-end server qualification. |
+
+These are specific checked files and paths, not a promise that arbitrary GGUFs or all model variants work.
+The [catalog's family definitions](tools/xemaya/catalog.py) describe current advertised capabilities.
 
 ## Status
 
-Everything below was checked on the development machine (Ubuntu 26.04, Intel Arc Pro B70 32 GB, B65 32 GB and
-B60 24 GB, Intel oneAPI `icpx` 2026.2).
+The following are **previously recorded results**, not tests rerun for this documentation update.
+They used Intel oneAPI `icpx` 2026.2 on Linux and Arc Pro B70 (32 GB), B65 (32 GB) and B60 (24 GB).
+See [STATUS.md](xemaya/STATUS.md) for dates, settings, mismatches, incidents and historical runs.
 
-| Area | Result |
-| --- | --- |
-| Build | Core, tests, parity binaries and the full engine (GLM and DeepSeek kernels included) build with 0 errors |
-| Host tests | XeStrata's 13 host tests, plus `model_spec_test` and `ds41_manifest_test` |
-| GLM-5.3-Flash kernels | `glm5_parity` (with the F32 mixer checks) on the CPU device and on each Arc card (B70, B65, B60) |
-| GLM-5.3-Flash on Arc | Maya-S v2 IQ2_XXS runs natively on B70 + B65 + B60. Its first 16 greedy tokens match llama.cpp's (16 of 16 top-1 when forced along them). 2,377-token prompt: prefill 93-100 tok/s (stock llama.cpp SYCL 68.3), decode 13.9 tok/s (13.6), 16.0 with MTP drafts; 512 tokens after a short prompt: 17.3, 22.9 with drafts. Not production-ready: one prompt checked, 4K context, no API soak |
-| llama.cpp reference | 16 greedy tokens of Maya-S v2 from llama.cpp v0.8.0 on the CPU, with each step's top-5, saved for the GPU comparison |
-| DeepSeek-V4.1 model files | All 1043 tensors of both ISTA-DASLab models match llama.cpp's shapes |
-| DeepSeek-V4.1 kernels | `ds41_parity`: 18/18 on the CPU device and on each Arc card (router, mHC, compressor, Engram gate and hash, YaRN RoPE, indexer, top-k, sink attention) |
-| DeepSeek-V4.1-Flash on Arc | The Coder GSQ-RCO IQ2_XXS file runs natively on B70 + B65 (2026-11-10). Forced along llama.cpp's CPU reference: 16 of 16 top-1 on a 576-token prompt, 15 of 16 on a 24-token prompt (one flip at a 0.21 margin). Warm: prefill 48.5-48.9 tok/s (the prompt still runs in decode windows), decode 16.3 tok/s; first prompt after a load 10.8 tok/s. A 2,876-token prompt runs (decode 15.9 tok/s). The full 384-expert file loads and generates, not yet compared with a reference |
-| i-quant kernels | `iq_parity`: 0 failures over 10 formats (IQ1_M to IQ4_XS, Q2_0, Q3_K) on the CPU device and each Arc card |
-| Element-wise kernels | `elementwise_parity`: 0 failures on each Arc card |
-| Server | 14 newer Strata tool-call fixes ported; serve tests 930 passed, 0 failed |
+| Checked configuration | Prefill | Decode | Qualification |
+| --- | ---: | ---: | --- |
+| GLM-5.3-Flash Maya-S v2, three GPUs, XMX attention, 2,377-token prompt (window 3) | 152–161 tok/s | 17.4 tok/s; 20.0 with MTP | 126/128 on the separate chat-agent reference; other prompts have larger differences. |
+| DeepSeek-V4.1-Flash Coder, three GPUs, direct expert tiers + XMX (window 6) | 207–209 tok/s at 576 tokens; 225 at 2,876 | 19.5–21.7 tok/s | 16/16 forced tokens on each of the 24- and 576-token references. |
+| MiniMax-M3.1-Flash Maya-S, three GPUs, mmap experts | 51–60 tok/s on the longer warm prompt | 2.2–2.3 tok/s on that prompt | Short chat: 32/32; longer chat: 28/32. CPU was shared with reference jobs. |
+| Qwen3.8-Flash-Next, B70 + B65, 26.8K prompt (window 4) | 1,842–1,884 tok/s; 1,989–1,996 with `STRATA_PREFILL_MMQ=0` | 76.6 / 57.1 tok/s (code / prose) | Behind Strata v0.2.12's 2,211 tok/s prefill and 78.3 / 59.2 decode in that comparison. |
 
-GPU window 4 (2026-11-09): on Qwen3.8 Flash-Next (B70 + B65, the same prompts) XeMaya reads a 26.8K-token prompt at 1,842-1,884 tok/s (1,989-1,996 with STRATA_PREFILL_MMQ=0), as XeStrata 0.2.2 does, behind upstream Strata v0.2.12's 2,211; decode 76.6 / 57.1 tok/s (code / prose) against 78.3 / 59.2. DeepSeek-V4.1-Flash: the whole model runs on the host as a reference (16 of 16 tokens against llama.cpp) and the engine's block passes its first forced check on the CPU device; it has not run on an Arc GPU yet. GPU window 3 (2026-11-09): with the attention on Intel's XMX matrix engines, a 2,377-token prompt reads at 152 tok/s (TTFT 15.6 s; stock llama.cpp SYCL 68.3, grouped 108.9) and decodes at 17.4 tok/s (20.0 with MTP drafts); prefill holds ~205 tok/s from 8K to 128K; a coding-agent session through the OpenAI API made valid tool calls and reused the conversation every turn. Not production-ready. The window ended with the host losing its network under XeMaya's heaviest load; the cause and the safeguards are in xemaya/STATUS.md. Detailed notes: [xemaya/STATUS.md](xemaya/STATUS.md).
+GLM's earlier llama.cpp SYCL baselines were 68.3 / 13.6 tok/s (stock) and 108.9 / 14.0
+(experimental grouped matmul), prefill / decode at 2,377 tokens. Results across different prompts,
+files, GPU counts or cold/warm states are not interchangeable; no general speed superiority is claimed.
 
-## Roadmap
-
-1. **Foundation**: fork, licences, Intel oneAPI build, kernel tests. *Done.*
-2. **Catch up with Strata** where it matters for Intel: server correctness (tool calls done; request lifecycle next).
-3. **GLM-5.3-Flash on Arc**: load Maya-S v2 across several GPUs, match llama.cpp token for token, then tune. *Running and matching (2026-11-09); tuning: the DSA attention kernel next.*
-4. **DeepSeek-V4.1-Flash on Arc**: the model block on XeStrata's PlainModel (mHC, Engram, expert tiers, multi-GPU).
-5. **Production quality**: tool calling, long-run stability, and prefill/decode performance against the baselines below.
-
-The design decision and the plan for each step: [xemaya/PLAN.md](xemaya/PLAN.md).
-
-### Baselines to beat
-
-Earlier runs of the same models on the same machine through llama.cpp's SYCL backend:
-
-| Model | Prefill | Decode |
-| --- | ---: | ---: |
-| DeepSeek-V4.1 Maya-XS (with a custom loader patch) | 45.6 tok/s | 10.9 tok/s |
-| GLM-5.3 Maya-S v2 (stock llama.cpp) | 68.3 tok/s | 13.6 tok/s |
-| GLM-5.3 Maya-S v2 (experimental grouped SYCL matmul) | 108.9 tok/s | 14.0 tok/s |
-| *XeMaya, GLM-5.3 Maya-S v2, 3 GPUs, same prompt length (window 3, XMX attention)* | *152 tok/s* | *17.4 tok/s; 20.0 with MTP drafts* |
-
-These are reference points, not like-for-like targets.
+Recorded checks also include host tests, GLM / DeepSeek / MiniMax kernel parity, IQ-format parity,
+and the server suite (930 passed, 23 skipped at the recorded checkpoint). Later source changes have not
+all been rerun across every model, build mode or OS. Windows and free-mode qualification for the new
+MiniMax path remain unverified.
 
 ## Building
 
-XeMaya is Intel-first and builds with Intel oneAPI's `icpx` (XeStrata's intel/llvm DPC++ toolchain still works).
+From the XeMaya checkout on Linux, with Intel oneAPI available:
 
 ```bash
 source /opt/intel/oneapi/setvars.sh
-cmake -S XeMaya -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-      -DCMAKE_CXX_COMPILER=icpx -DCMAKE_C_COMPILER=icx -DSTRATA_BUILD_TESTS=ON
-ninja -C build strata            # the engine
-ninja -C build glm5_parity ds41_parity model_spec_test
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_CXX_COMPILER=icpx -DCMAKE_C_COMPILER=icx \
+  -DSTRATA_LICENSE=contrib -DXEMAYA_ALLOW_ICPX=ON \
+  -DSTRATA_CUDA_ARCHS= -DSTRATA_HIP_ARCHS= \
+  -DSTRATA_ENABLE_XE=ON -DSTRATA_NATIVE_EXPERTS=ON -DSTRATA_BUILD_TESTS=ON
+cmake --build build --target strata glm5_parity ds41_parity minimax_parity model_spec_test --parallel 4
 ```
 
-Kernel parity on the CPU device (no GPU needed):
-`ONEAPI_DEVICE_SELECTOR=opencl:cpu XEMAYA_CPU_DEVICE=1 build/glm5_parity` (and the same for `ds41_parity`).
+`CMakeLists.txt` accepts `icpx` through `XEMAYA_ALLOW_ICPX` (default ON); its build is Intel-only.
+Native expert support uses ggml-cpu from the pinned source fetched by CMake, or a llama.cpp checkout
+selected with `STRATA_GGML_DIR`. It does not use llama.cpp as the serving backend.
 
-Installing and running Qwen3.8-Flash-Next works as in XeStrata (the command is still `xestrata` for now):
-see [docs/XESTRATA.md](docs/XESTRATA.md), [docs/BUILD.md](docs/BUILD.md) and [docs/DETAILS.md](docs/DETAILS.md).
-The server speaks the OpenAI and Anthropic APIs, so any compatible client or coding agent can use it.
+CPU-device kernel parity requires an installed OpenCL CPU device:
+
+```bash
+ONEAPI_DEVICE_SELECTOR=opencl:cpu XEMAYA_CPU_DEVICE=1 build/glm5_parity
+ONEAPI_DEVICE_SELECTOR=opencl:cpu XEMAYA_CPU_DEVICE=1 build/ds41_parity
+ONEAPI_DEVICE_SELECTOR=opencl:cpu XEMAYA_CPU_DEVICE=1 build/minimax_parity
+```
+
+The inherited setup/packaging workflow still uses the `xestrata` name and intel/llvm toolchain;
+`setup.py` does not adopt the direct CMake `icpx` workflow above. Read the inherited
+[installation guide](docs/XESTRATA.md) and [build guide](docs/BUILD.md) with that distinction in mind.
+These commands were checked against source, not executed on the development GPUs for this audit.
+
+## Model discovery and serving
+
+[`tools/xemaya/catalog.py`](tools/xemaya/catalog.py) scans local GGUF headers without loading a model
+or opening a GPU. It recognises `qwen4exp`, `glm5-next`, `deepseek41` and `minimax-m3`, groups split files
+from their first shard, and emits JSON with model files, trained/default context, capability flags,
+qualification notes and engine arguments.
+
+```bash
+python3 tools/xemaya/catalog.py --root /path/to/models \
+  --engine /path/to/build/strata --configs /path/to/server-configs --pretty
+```
+
+Add `--write --tokenizers` to extract missing GGUF tokenizers and write server configs.
+Inspect `ready`, `missing`, `state` and `note` before using a result. `ready` checks prerequisites
+(including model shards, engine and, when configs are requested, tokenizer); it is not a runtime test.
+`verified` is a family-level record of limited reference checks, not certification of each discovered file.
+The catalog caps its default context at 32,768 tokens; that default is not a tested context guarantee.
+
+The inherited [`serve/server.py`](serve/server.py) exposes OpenAI- and Anthropic-compatible routes.
+Compatibility and model capabilities vary: GLM has a recorded tool session, DeepSeek lacks its tool-call
+format, and MiniMax's end-to-end serving remains unverified. See the inherited
+[API reference](docs/DETAILS.md#using-it) and the [documentation map](DOCUMENTATION.md).
+
+## Roadmap
+
+1. Diagnose MiniMax's RAM-copy reset before resuming development GPU work.
+2. Improve MiniMax expert residency, sparse selection and prefill; qualify server/tools, then vision and DSpark.
+3. Recheck GLM and Qwen after the shared expert-tier changes; expand DeepSeek file and serving coverage.
+4. Continue selective Strata request-lifecycle fixes and test long-run stability across supported paths.
+
+The detailed milestones and remaining work are in [PLAN.md](xemaya/PLAN.md).
 
 ## Contributing
 
-Issues and pull requests are welcome, especially from people with Intel Arc hardware (Alchemist, Battlemage or Arc Pro).
-Kernel work comes with a parity test against a host reference, and model work with a token-level comparison against
-llama.cpp on the same file. See [CONTRIBUTING.md](CONTRIBUTING.md).
+Reports and pull requests are welcome. Include the exact file, settings and hardware for reproducible issues.
+Kernel changes need host-reference parity; model changes need token-level comparisons. Mark untested build
+modes and hardware in reports. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
-XeStrata's documentation is also available in Japanese in the [XeStrata repository](https://github.com/MistVVK/XeStrata).
+## Support development
+
+If you would like to support XeMaya, [buy Jumbomuffin777 a coffee](https://buymeacoffee.com/Jumbomuffin777).
+Testing on Arc hardware, clear bug reports and documentation improvements also help.
 
 ## Licence
 

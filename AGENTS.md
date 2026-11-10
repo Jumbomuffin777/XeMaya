@@ -5,6 +5,14 @@ SPDX-License-Identifier: LGPL-3.0-or-later AND MIT
 -->
 # Notes for coding agents
 
+> **XeMaya scope.** This file retains XeStrata's conventions and historical build policy. Read
+> [XeMaya's notes](xemaya/AGENTS.md), the latest [status handoff](xemaya/STATUS.md) and the
+> [documentation map](DOCUMENTATION.md) for this fork. In implemented code, `CMakeLists.txt` accepts
+> Intel-only icpx through `XEMAYA_ALLOW_ICPX`; `setup.py` still follows the inherited policy below.
+> XeMaya's maintained documentation is English-only; Japanese originals of inherited guides remain upstream.
+> These distinctions do not establish that untested build modes or hardware pass.
+
+
 ## LOCAL.md: this machine's facts (read it first, keep it current)
 
 `LOCAL.md` in the repository root holds what is true of this machine and the machines it works with, and nothing else holds it; git ignores it.
