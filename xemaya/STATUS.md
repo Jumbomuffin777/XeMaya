@@ -27,6 +27,12 @@ command, [INSTALL.md](../INSTALL.md) its guide, [CHANGELOG](../CHANGELOG.md) wha
   from its archive with the PyPI run-time, DeepSeek-V4.1 Coder IQ2_XXS on B70 + B65 + B60 through `gpu_job.sh`:
   16 of 16 on both references (median 0.009 / 0.010, max 0.096 / 0.155), load 37 s, 576-token first prompt
   128 tok/s, decode 15.6-16.1 tok/s, no kernel message. Logs: `<work>/logs/release-rc2/`.
+- **Published** 2026-11-10 21:32 UTC: the tag `xemaya-0.1.0-alpha.1` (commit `ce3afa7aa`), a pre-release with
+  the Linux archive, the source archive and SHA256SUMS at
+  https://github.com/Jumbomuffin777/XeMaya/releases/tag/xemaya-0.1.0-alpha.1; the repository is public. The published
+  build itself repeated the GPU check (16 of 16 on both references, 132 tok/s first prompt at 576 tokens, no kernel
+  message; `<work>/logs/release-final/`), and the archive downloaded anonymously installed and passed its checks in a
+  clean Ubuntu 24.04 container.
 - **Unverified:** GLM-5.3 and Qwen3.8 with the release build; any GPU but the three Arc Pro cards; the free and
   contrib-llvm modes with intel/llvm (the release is built with icpx); Windows.
 - The stop on other GPU work in the handoff below still holds (the MiniMax reset is not diagnosed).
