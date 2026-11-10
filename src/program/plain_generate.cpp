@@ -354,14 +354,14 @@ static int plain_serve(strata::core::PlainModel& model, const strata::core::Plai
         std::printf("INFO stages=%s gpu_names=%s gpu_used_mib=%s gpu_total_mib=%s\n", st.c_str(), names.c_str(),
                     used.c_str(), total.c_str());
     }
-    if (const strata::hybrid::RemoteSegment* far = model.remote()) {
+    if (const strata::hybrid::RemoteSegment* seg = model.remote()) {
         // XeMaya: the blocks another engine holds (a segment worker), for the server's status
-        std::string dev = far->shape().device;
+        std::string dev = seg->shape().device;
         for (char& c : dev)
             if (c == ' ' || c == ',' || c == '=') c = '_';
-        std::printf("INFO hybrid=%s hybrid_blocks=%lld-%lld hybrid_device=%s hybrid_wire=%s\n", far->address().c_str(),
-                    (long long) far->shape().seg_first, (long long) far->shape().seg_last - 1, dev.c_str(),
-                    far->f16() ? "f16" : "f32");
+        std::printf("INFO hybrid=%s hybrid_blocks=%lld-%lld hybrid_device=%s hybrid_wire=%s\n", seg->address().c_str(),
+                    (long long) seg->shape().seg_first, (long long) seg->shape().seg_last - 1, dev.c_str(),
+                    seg->f16() ? "f16" : "f32");
     }
     strata::platform::settle_before_ready();
     std::printf("READY %lld stop\n", (long long) ctx);
@@ -794,8 +794,8 @@ static int plain_serve(strata::core::PlainModel& model, const strata::core::Plai
             continue;
         }
         const Clock::time_point t2 = Clock::now();
-        if (const strata::hybrid::RemoteSegment* far = model.remote()) {   // XeMaya: what the link cost so far
-            const strata::hybrid::LinkStats& k = far->link();
+        if (const strata::hybrid::RemoteSegment* seg = model.remote()) {   // XeMaya: what the link cost so seg
+            const strata::hybrid::LinkStats& k = seg->link();
             std::fprintf(stderr, "strata (%s): segment link: %llu calls, %.1f MB out, %.1f MB back, %.0f ms in all, "
                                  "%.0f ms of it the worker's blocks\n", arch.c_str(), (unsigned long long) k.calls,
                          (double) k.bytes_out / 1e6, (double) k.bytes_in / 1e6, k.round_ms, k.remote_ms);

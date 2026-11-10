@@ -160,7 +160,7 @@ void rope(float* x, int32_t pos, const Rope& r, bool inverse, int64_t rows, int6
     float corr[2] = {0, 0};
     if (r.ext_factor != 0.0f) {
         const auto cd = [&](float n_rot) {
-            return (float) r.n_rot * logf((float) r.n_ctx_orig / (n_rot * 2 * (float) M_PI)) / (2 * logf(r.freq_base));
+            return (float) r.n_rot * logf((float) r.n_ctx_orig / (n_rot * 2 * 3.14159265358979323846f /* pi written out: MSVC's <cmath> has no M_PI without a define */)) / (2 * logf(r.freq_base));
         };
         corr[0] = std::max(0.0f, floorf(cd(r.beta_fast)));
         corr[1] = std::min((float) (r.n_rot - 1), ceilf(cd(r.beta_slow)));

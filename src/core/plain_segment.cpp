@@ -23,7 +23,8 @@ namespace {
 std::atomic<bool> g_stop{false};
 
 #if defined(_WIN32)
-BOOL WINAPI on_console(DWORD) {
+// no WINAPI: x86-64 Windows has one calling convention, and the device pass of this file warns about __stdcall
+BOOL on_console(DWORD) {
     g_stop = true;
     return TRUE;
 }

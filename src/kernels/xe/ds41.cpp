@@ -336,7 +336,7 @@ void ds41_rope(float* x, const int32_t* pos, const Ds41Rope& r, bool inverse, in
     float corr[2] = {0.0f, 0.0f};
     if (r.ext_factor != 0.0f) {
         const auto corr_dim = [&](float n_rot) {
-            return (float) r.n_rot * std::log((float) r.n_ctx_orig / (n_rot * 2.0f * (float) M_PI)) /
+            return (float) r.n_rot * std::log((float) r.n_ctx_orig / (n_rot * 2.0f * 3.14159265358979323846f /* pi written out: MSVC's <cmath> has no M_PI without a define */)) /
                    (2.0f * std::log(r.freq_base));
         };
         corr[0] = std::fmax(0.0f, std::floor(corr_dim(r.beta_fast)));

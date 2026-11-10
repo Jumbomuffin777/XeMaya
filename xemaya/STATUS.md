@@ -23,7 +23,15 @@ front-end's side, the setup and the remaining work in order: FrontierUI's `docs/
   Flash Maya-S, blocks 0-44 in one engine, 45-59 in a worker over the loopback, chat template, 211-token prompt in
   chunks, 32 forced steps: **32 of 32 against the llama.cpp reference**, median |d logprob| 0.001, max 0.178 (the
   whole model in one engine: 32 of 32, 0.001, 0.120). `segment_link_test` PASS (also ASan/UBSan). serve 934 passed.
-- **Unverified:** any GPU, two machines, the Windows build (two `_WIN32` branches never compiled), NVIDIA's kernels on
+- **Windows, the CUDA target: compiled and linked, never run** (2026-11-10, `tools/xemaya/win_build.sh`, the
+  contrib-llvm mode, sm_60 to sm_90, cross-built on Linux). `strata.exe` links with no warning but lld's known one
+  about `sycl9.lib`. What the compiler found: `M_PI` (MSVC's `<cmath>` has none) in the three DeepSeek-V4.1 RoPE
+  sources, a variable named `far` (a macro of `windows.h`) in `plain_generate.cpp`, `WINAPI` on the worker's console
+  handler (the device pass warns about `__stdcall`). The Winsock branch of `src/platform/net.cpp` compiled as it was.
+  `win_build.sh worker DIR` writes the folder a segment worker runs from. The PC needs, besides NVIDIA's driver:
+  **`cublas64_12.dll`** (CUDA 12's cuBLAS: the toolkit, or the `nvidia-cublas-cu12` wheel's folder on `PATH`) and
+  Microsoft's Visual C++ runtime (`MSVCP140.dll`, `VCRUNTIME140.dll`); read from the binaries' import tables.
+- **Unverified:** any GPU, two machines, the Windows program running at all, NVIDIA's kernels on
   these models, GLM-5.3 and DeepSeek-V4.1 over the link (DeepSeek's prompts go through the windows there), a state
   saved and restored over the link on a real model, halves on a real model, the free mode.
 - **Not built:** drafts (MTP), a grammar mask or logit bias, pictures with a remote segment; a RAM copy of a segment's
