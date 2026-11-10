@@ -50,6 +50,8 @@ command -v icpx >/dev/null || { echo "icpx is not on PATH after setvars.sh (ONEA
 
 ggml=()
 [ -n "${XEMAYA_GGML_DIR:-}" ] && ggml=(-DSTRATA_GGML_DIR="$XEMAYA_GGML_DIR")
+# XEMAYA_CMAKE_ARGS is several arguments: split on purpose
+# shellcheck disable=SC2086
 cmake -S "$work/$name" -B "$work/build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_CXX_COMPILER=icpx -DCMAKE_C_COMPILER=icx \
   -DSTRATA_LICENSE=contrib -DXEMAYA_ALLOW_ICPX=ON -DSTRATA_CUDA_ARCHS= -DSTRATA_HIP_ARCHS= \
