@@ -174,7 +174,35 @@ products cost: five barriers, the gather of K and V into local memory, the softm
 of the chunk loop, not a switch.
 
 The larger lever is where the draft layer runs: on the layer split it sits with the last stage, on the B65, and
-the B70, idle while a draft chain runs, does the same attention in 165 us against 283 and the same head's products
-in 41 against 69. Moving the drafter (its weights, its K/V and the draft head) to the first GPU costs one residual
-hand-off a chain; by the two measurements above (about +0.5% code for 100 us off a draft step) it is the step that
-could pass 80. Not built.
+the B70 does the same attention in 165 us against 283 and the same head's products in 41 against 69.
+
+### The B70 as the last stage (a setting, no code: `STRATA_GPU_PCI` names the B65, which then goes first)
+
+The engine lists the GPU `STRATA_GPU_PCI` names first, so naming the B65 makes the B70 the last stage, with the head
+and the draft layer (`<the address>: LOCAL.md`). The same build and command, `--layer-split` set with it:
+
+| Arm | 26.8K code tok/s (drafts kept) | 26.8K prose tok/s (drafts kept) | 59-token code | 68-token prose | Experts found in VRAM |
+|---|---|---|---|---|---|
+| B70 first, split 26 (the row above) | 79.4 (164 of 194) | 59.9 (128 of 234) | 81.9 (167 of 226) | 61.9 (122 of 236) | 100% |
+| B65 first, split 22 | 78.5 (160 of 201) | 59.5 (123 of 244) | 83.7 | 63.3 | 99.8-99.9%: the B70 holds 12,243 of its 13,312 pairs |
+| B65 first, split 24 | 83.2 (168 of 194) | 59.1 (125 of 247) | 82.6 (167 of 226) | 62.6 (122 of 236) | 100% |
+
+The engine's timing of the draft head on the B70: 84-107 us a step (130 on the B65).
+
+Split 24 reads 83.2 tok/s on the 26.8K code prompt, past the 80 aimed at, but most of that is not the card: the
+layers that moved take other kernels' forms on the other card (the experts in int8 below 181 rows on the B65, 362
+on the B70), the long prompts' texts part from the other arm's (the second turns keep 158 of 212 drafts against 210
+of 210), and this run keeps 4 more drafts of 194 on the code prompt and 3 fewer on the prose one. A window costs
+35.0 ms in both arms on code (3,223 ms over 92 windows, 3,076 over 88) and 33.4 against 33.1 on prose. Where the
+texts are the same (the short prompts, the same drafts kept) the gain is 0.8% and 1.2%: the draft layer's faster
+card, less the two layers that moved to the slower one. Split 22 keeps the layers but the B70 then cannot hold its
+experts, and the misses cost more than the drafts gain.
+
+So the order of the cards is worth about 1% at the same drafts, and a prompt can read a few percent either way
+with it. What would keep both - 26 layers on the B70 and the draft layer there too - is the drafter on the first
+GPU in the code: its weights (835 MiB), its K/V and the draft head on the first stage's card, the window's last
+residuals handed over once a round (T rows of 4 x 2560 floats), and the prompt path's batched K/V of the draft
+layer (`Prefill::draft_kv`) either computed on the last stage and copied, or the prompt's residual rows copied
+(1.1 GB for 26.8K cells). The B70's expert cache then loses about 1 GiB, which at split 26 it does not have
+(10,504 slots for 13,312 pairs today): the layer split would have to move with it. Not built.
+
