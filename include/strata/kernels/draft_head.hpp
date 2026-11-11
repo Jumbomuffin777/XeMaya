@@ -25,6 +25,27 @@ void int2_pack_rows(const float* rows, int64_t n_rows, int n_in, uint8_t* out);
 /// y[r] = the int2 row r of `w` . x for the `n_out` rows (`x`: `n_in` floats).  Device pointers.
 void int2_gemv(const uint8_t* w, const float* x, float* y, int n_in, int64_t n_out, void* stream);
 
+// XeMaya: the same rows in bit planes.  A row's codes are stored a plane at a time (the low bits of its n_in / 32
+// spans of 32 values as one 32-bit word each, then the high bits), and the activations are cut to kInt2XBits bits a
+// span (their least value and step, the span's sum beside them): a row's product is then popcounts of a code plane
+// and an activation plane, 2 * kInt2XBits a span, instead of a multiply a value.  The activations' rounding adds
+// about 1e-3 of the 2-bit rows' own error to the products (a 32-value span at 6 bits against a 128-value group at 2).
+
+/// The bits an activation keeps in the bit-plane form.
+constexpr int kInt2XBits = 6;
+
+/// Host: `n_rows` rows of int2_pack_rows' form to the bit-plane form, in place (the same bytes a row).
+void int2_rows_to_planes(uint8_t* rows, int64_t n_rows, int n_in);
+
+/// The bytes int2_x_planes writes for `n_in` activations.
+std::size_t int2_x_planes_bytes(int n_in);
+
+/// The activations `x` (`n_in` floats) cut to their bit planes, into `xp`.  Device pointers.
+void int2_x_planes(const float* x, void* xp, int n_in, void* stream);
+
+/// y[r] = the bit-plane row r of `w` . the activations of `xp` (int2_x_planes') for the `n_out` rows.
+void int2_planes_gemv(const uint8_t* w, const void* xp, float* y, int n_in, int64_t n_out, void* stream);
+
 /// The largest topk_max values a call can choose.
 constexpr int kTopKMax = 64;
 

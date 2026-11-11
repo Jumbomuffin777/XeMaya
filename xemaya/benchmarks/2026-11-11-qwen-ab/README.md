@@ -122,3 +122,42 @@ benchmark, 1,238 steps: 1.13 ms a step (1.41 before), the attention 0.197 ms (0.
 | q projection, norm, rope, rotation | 0.079 | 7.0% |
 
 Next: the draft head (0.23 ms a step, a fixed cost at every context), then the routed experts.
+
+## The draft head's 2-bit rows in bit planes (`int2_planes_gemv`, the same day)
+
+The draft layer and its head run on the second GPU of the layer split, the B65, so the profile above is the B65's;
+the head it times is the 2-bit one (`DraftHeadInt2`: the 40,525 rows at 2 bits, the 16 best taken again from the
+Q6_K head), not `native_mmvq` over every row. `draft_head_parity --bench 40525 2560`, us a call:
+
+| Part | B65 | B70 |
+|---|---|---|
+| the 2-bit products (`int2_gemv`) | 167 | 90 |
+| the top 16 | 39 | 34 |
+| quantize, gather, the 16 rows' own products, pad, scatter | 13 | 11 |
+| the whole Q6_K head, for comparison | 196-209 | 147-163 |
+| the activations' planes + the products in planes | 3 + 69 | 3 + 41 |
+
+The 2-bit products read 28 MiB in 167 us on the B65, well under what the same card reads for the whole head
+(81 MiB in about 200 us): arithmetic, not memory, a multiply a value. In bit planes (a row's low and high bits as
+32-bit words, the activations cut to 6 bits a span of 32 values) a row's product is 12 popcounts a span. The
+activations' rounding moves a product by at most 2.7e-02 of the largest (random rows; about 1e-3 of the 2-bit rows'
+own error in variance). `draft_head_parity`: 0 failures on the B70, the B65 and the OpenCL CPU device, the planes
+within 8.7e-07 of the scale of an FP64 reference that rounds the activations alike.
+
+The same command as above, one load, no kernel message; the arm without it is the row above (the same code path,
+`XEMAYA_DRAFT_HEAD=ref`), not run again:
+
+| Arm | 26.8K code tok/s (drafts kept) | 26.8K prose tok/s (drafts kept) | 59-token code | 68-token prose |
+|---|---|---|---|---|
+| the rows as they were | 78.5 (164 of 195) | 59.7 (128 of 234) | 81.0 | 61.6 |
+| the default (bit planes) | 79.4 (164 of 194) | 59.9 (128 of 234) | 81.9 | 61.9 |
+| Strata v0.2.12 (from above) | 78.7 (167 of 196) | 59.2 (131 of 233) | 84.2 | 58.7 |
+
+The engine's own timing of the head at the start: 216 -> 130 us a step. +0.9 tok/s on code at 26.8K with the drafts
+kept as before, past Strata there; prose +0.2, inside the spread between runs (about 0.5). Not yet the 80 aimed at.
+
+What is left in a draft step at 26.8K on the B65, from the benches: the attention about 306 us (167 on the B70; its
+slot count was measured on the B70 alone, and the B65's 80 slots are near its best, 32 to 128 give 335-355), the
+head about 130, of which the top 16 is 39. The attention keeps each query and each weight as two FP16 halves for
+the main model's parity; over INT8 K and V the draft layer does not need the low halves, which is half of its
+matrix products. Next: that, then the routed experts.

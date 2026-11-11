@@ -25,6 +25,16 @@ namespace {
 
 // The candidates taken again: 16 kept the rerank at 4-5 us of a draft step on the B70 and the RTX 4070, and the
 // top-k at 22-58 us (32: 39-126, 64: 74-222; records/2026-10-26-plan/d1).  STRATA_DRAFT_INT2_K sets it (1..64).
+// XeMaya: the 2-bit rows in bit planes (draft_head.hpp: popcounts instead of a multiply a value; B65 167 -> 69 us and
+// B70 90 -> 41 us a step over 40,525 rows of 2560, 2026-11-11).  XEMAYA_DRAFT_HEAD=ref keeps the rows as they were.
+bool planes_on() {
+    static const bool on = [] {
+        const char* v = std::getenv("XEMAYA_DRAFT_HEAD");
+        return v == nullptr || std::strcmp(v, "ref") != 0;
+    }();
+    return on;
+}
+
 int candidates() {
     static const int k = [] {
         const char* v = std::getenv("STRATA_DRAFT_INT2_K");
@@ -127,7 +137,7 @@ bool DraftSubset::load(const std::string& path, int64_t n_vocab, const void* hea
 
 DraftHeadInt2::~DraftHeadInt2() {
     for (const void* p : {(const void*) codes_, (const void*) cand_, (const void*) cand_rows_, (const void*) cand_y_,
-                          (const void*) scratch_})
+                          (const void*) scratch_, (const void*) xplanes_})
         if (p != nullptr) gpu::free(p);
 }
 
@@ -166,6 +176,8 @@ bool DraftHeadInt2::build(int type, int64_t n_rows, int n_in, const std::functio
         }
     };
     const size_t rb = k::int2_row_bytes(n_in);
+    planes_ = planes_on();
+    const bool planes = planes_;
     std::vector<uint8_t> host((size_t) n_rows * rb);
     // the rows to floats (ggml's dequantizer) and to the int2 form, on a few threads
     std::atomic<int64_t> next{0};
@@ -184,6 +196,7 @@ bool DraftHeadInt2::build(int type, int64_t n_rows, int n_in, const std::functio
                     if (ftype != type) { gguf_order(src, tmp.data()); src = tmp.data(); }
                     if (!k::cpu::native_row_to_float(ftype, src, f.data(), n_in)) { bad = true; break; }
                     k::int2_pack_rows(f.data(), 1, n_in, host.data() + (size_t) r * rb);
+                    if (planes) k::int2_rows_to_planes(host.data() + (size_t) r * rb, 1, n_in);
                 }
         });
     for (auto& th : pool) th.join();
@@ -196,11 +209,12 @@ bool DraftHeadInt2::build(int type, int64_t n_rows, int n_in, const std::functio
     scratch_ = gpu::alloc_device(scratch);
     if (scratch_ == nullptr || !gpu::alloc_device(&codes_, host.size()) || !gpu::alloc_device(&cand_, (size_t) k_ * 4) ||
         !gpu::alloc_device(&cand_rows_, (size_t) k_ * exact_row_bytes) || !gpu::alloc_device(&cand_y_, (size_t) k_ * 4) ||
-        !gpu::copy(codes_, host.data(), host.size())) {
+        !gpu::copy(codes_, host.data(), host.size()) ||
+        (planes_ && (xplanes_ = gpu::alloc_device(k::int2_x_planes_bytes(n_in))) == nullptr)) {
         err = "no VRAM for the draft head's int2 copy";
         return false;
     }
-    bytes_ = host.size() + (size_t) k_ * (8 + exact_row_bytes) + scratch;
+    bytes_ = host.size() + (size_t) k_ * (8 + exact_row_bytes) + scratch + (planes_ ? k::int2_x_planes_bytes(n_in) : 0);
     n_rows_ = n_rows;
     n_in_ = n_in;
     exact_row_bytes_ = exact_row_bytes;
@@ -209,7 +223,12 @@ bool DraftHeadInt2::build(int type, int64_t n_rows, int n_in, const std::functio
 
 void DraftHeadInt2::logits(const float* x, const uint8_t* head_rows, const Exact& exact, float* out, void* stream,
                            const int32_t* pos) const {
-    k::int2_gemv(codes_, x, out, n_in_, n_rows_, stream);
+    if (planes_) {
+        k::int2_x_planes(x, xplanes_, n_in_, stream);
+        k::int2_planes_gemv(codes_, xplanes_, out, n_in_, n_rows_, stream);
+    } else {
+        k::int2_gemv(codes_, x, out, n_in_, n_rows_, stream);
+    }
     k::topk(out, n_rows_, k_, cand_, scratch_, stream);
     k::gather_rows(head_rows, (int64_t) exact_row_bytes_, cand_, k_, cand_rows_, stream);
     exact(cand_rows_, k_, cand_y_, stream);

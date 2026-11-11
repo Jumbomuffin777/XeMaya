@@ -87,6 +87,8 @@ private:
     uint8_t* cand_rows_ = nullptr;
     float* cand_y_ = nullptr;
     void* scratch_ = nullptr;
+    void* xplanes_ = nullptr;   // XeMaya: the activations' bit planes, where the rows are kept in planes
+    bool planes_ = false;
     uint64_t bytes_ = 0;
     int64_t n_rows_ = 0;
     int n_in_ = 0, k_ = 0;

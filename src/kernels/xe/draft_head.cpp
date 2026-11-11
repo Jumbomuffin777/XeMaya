@@ -9,8 +9,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <limits>
 #include <stdexcept>
+#include <vector>
 
 namespace strata::kernels {
 namespace {
@@ -138,6 +140,124 @@ void int2_gemv(const uint8_t* w, const float* x, float* y, int n_in, int64_t n_o
         }
     });
     done(stream, e, "int2_gemv");
+}
+
+namespace {
+constexpr int kXStride = kInt2XBits + 3;   // a span of int2_x_planes: its planes, then its least value, step and sum
+}
+
+void int2_rows_to_planes(uint8_t* rows, int64_t n_rows, int n_in) {
+    if (n_in <= 0 || n_in % kInt2Group != 0) throw std::invalid_argument("int2_rows_to_planes: n_in is not a multiple of 128");
+    const std::size_t rb = int2_row_bytes(n_in);
+    const int spans = n_in / 32;
+    std::vector<uint32_t> planes((std::size_t) spans * 2);
+    for (int64_t r = 0; r < n_rows; ++r) {
+        uint8_t* codes = rows + (std::size_t) r * rb;
+        for (int sp = 0; sp < spans; ++sp) {
+            uint32_t lo = 0, hi = 0;
+            for (int i = 0; i < 32; ++i) {
+                const int at = sp * 32 + i;
+                const uint32_t c = (codes[at / 4] >> (2 * (at % 4))) & 3u;
+                lo |= (c & 1u) << i;
+                hi |= (c >> 1) << i;
+            }
+            planes[(std::size_t) sp] = lo;
+            planes[(std::size_t) spans + (std::size_t) sp] = hi;
+        }
+        std::memcpy(codes, planes.data(), planes.size() * sizeof(uint32_t));
+    }
+}
+
+std::size_t int2_x_planes_bytes(int n_in) { return (std::size_t) (n_in / 32) * kXStride * sizeof(uint32_t); }
+
+void int2_x_planes(const float* x, void* xp, int n_in, void* stream) {
+    if (n_in <= 0 || n_in % kInt2Group != 0) throw std::invalid_argument("int2_x_planes: n_in is not a multiple of 128");
+    auto* out = static_cast<uint32_t*>(xp);
+    // a work-group a span: its least and largest value and its sum, then each plane as the group's OR
+    const auto e = Q(stream).parallel_for(sycl::nd_range<1>((size_t) n_in, 32), [=](sycl::nd_item<1> it) {
+        constexpr float kTop = (float) ((1 << kInt2XBits) - 1);
+        const auto grp = it.get_group();
+        const int j = (int) it.get_local_id(0);
+        const float xv = x[it.get_global_id(0)];
+        const float lo = sycl::reduce_over_group(grp, xv, sycl::minimum<float>());
+        const float hi = sycl::reduce_over_group(grp, xv, sycl::maximum<float>());
+        const float sum = sycl::reduce_over_group(grp, xv, sycl::plus<float>());
+        const float step = (hi - lo) / kTop;
+        const uint32_t u = step > 0.0f ? (uint32_t) sycl::clamp(sycl::rint((xv - lo) / step), 0.0f, kTop) : 0u;
+        uint32_t* o = out + (std::size_t) it.get_group(0) * kXStride;
+#pragma unroll
+        for (int b = 0; b < kInt2XBits; ++b) {
+            const uint32_t word = sycl::reduce_over_group(grp, ((u >> b) & 1u) << j, sycl::bit_or<uint32_t>());
+            if (j == 0) o[b] = word;
+        }
+        if (j == 0) {
+            o[kInt2XBits] = sycl::bit_cast<uint32_t>(lo);
+            o[kInt2XBits + 1] = sycl::bit_cast<uint32_t>(step);
+            o[kInt2XBits + 2] = sycl::bit_cast<uint32_t>(sum);
+        }
+    });
+    done(stream, e, "int2_x_planes");
+}
+
+void int2_planes_gemv(const uint8_t* w, const void* xp, float* y, int n_in, int64_t n_out, void* stream) {
+    if (n_out <= 0) return;
+    if (n_in <= 0 || n_in % kInt2Group != 0) throw std::invalid_argument("int2_planes_gemv: n_in is not a multiple of 128");
+    // A sub-group takes a span a lane and kBatch rows at a time: the span's planes are read once for those rows, and a
+    // row then costs two words of codes and its group's two scales a lane.  A work-group of kRows rows, whatever the
+    // device's sub-group width (B70 and B65, 2560 x 40,525, 2026-11-11: see xemaya/benchmarks/2026-11-11-qwen-ab).
+    constexpr int WG = 256, kRows = 128, kBatch = 8;
+    const std::size_t rb = int2_row_bytes(n_in);
+    const int spans = n_in / 32;
+    const int64_t groups = (n_out + kRows - 1) / kRows;
+    const auto* xs = static_cast<const uint32_t*>(xp);
+    const auto e = Q(stream).parallel_for(sycl::nd_range<1>((size_t) groups * WG, WG), [=](sycl::nd_item<1> it) {
+        const sycl::sub_group sg = it.get_sub_group();
+        const int lanes = (int) sg.get_local_range()[0], lane = (int) sg.get_local_id()[0];
+        const int n_sg = (int) sg.get_group_range()[0], sgi = (int) sg.get_group_id()[0];
+        const int64_t r0 = (int64_t) it.get_group(0) * kRows;
+        for (int j0 = 0; sgi + j0 * n_sg < kRows; j0 += kBatch) {   // the same for the whole sub-group
+            float acc[kBatch];
+#pragma unroll
+            for (int jj = 0; jj < kBatch; ++jj) acc[jj] = 0.0f;
+            for (int sp = lane; sp < spans; sp += lanes) {
+                const uint32_t* xw = xs + (std::size_t) sp * kXStride;
+                uint32_t u[kInt2XBits];
+#pragma unroll
+                for (int b = 0; b < kInt2XBits; ++b) u[b] = xw[b];
+                const float xlo = sycl::bit_cast<float>(xw[kInt2XBits]);
+                const float xstep = sycl::bit_cast<float>(xw[kInt2XBits + 1]);
+                const float xsum = sycl::bit_cast<float>(xw[kInt2XBits + 2]);
+#pragma unroll
+                for (int jj = 0; jj < kBatch; ++jj) {
+                    const int rr = sgi + (j0 + jj) * n_sg;
+                    const int64_t r = r0 + rr;
+                    if (rr < kRows && r < n_out) {
+                        const uint8_t* row = w + (std::size_t) r * rb;
+                        const auto* code = reinterpret_cast<const uint32_t*>(row);
+                        const auto* md = reinterpret_cast<const sycl::half*>(row + n_in / 4) +
+                                         (std::size_t) (sp / (kInt2Group / 32)) * 2;   // the group's minimum and step
+                        const uint32_t c0 = code[sp], c1 = code[spans + sp];
+                        uint32_t dot = 0;
+#pragma unroll
+                        for (int b = 0; b < kInt2XBits; ++b)
+                            dot += (sycl::popcount(c0 & u[b]) + 2u * sycl::popcount(c1 & u[b])) << b;
+                        const uint32_t csum = sycl::popcount(c0) + 2u * sycl::popcount(c1);
+                        // sum of (m + d c)(xlo + xstep u) = m * the span's sum + d * (xlo * sum c + xstep * sum c u)
+                        const float cx = sycl::fma(xstep, (float) dot, xlo * (float) csum);
+                        acc[jj] = sycl::fma((float) md[1], cx, sycl::fma((float) md[0], xsum, acc[jj]));
+                    }
+                }
+            }
+#pragma unroll
+            for (int jj = 0; jj < kBatch; ++jj) {
+                const int rr = sgi + (j0 + jj) * n_sg;
+                const int64_t r = r0 + rr;
+                const float total = sycl::reduce_over_group(sg, acc[jj], sycl::plus<float>());
+                if (lane == 0 && rr < kRows && r < n_out) y[r] = total;
+            }
+        }
+    });
+    done(stream, e, "int2_planes_gemv");
 }
 
 std::size_t topk_scratch_bytes(int64_t n, int k) {

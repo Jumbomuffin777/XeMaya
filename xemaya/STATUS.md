@@ -35,6 +35,7 @@ https://github.com/Jumbomuffin777/XeMaya. Every item below was run on the develo
   and contrib-llvm modes with intel/llvm, a smaller GPU, the UHD 770 and the Windows cross build are **unverified**.
   The slot count is measured on the B70 alone. **Next:** the draft head (0.228 ms a step, now the largest part),
   then the routed experts (0.179).
+- The draft head's 2-bit rows in bit planes (`int2_planes_gemv`, `XEMAYA_DRAFT_HEAD=ref` turns it off): the head 216 -> 130 us a draft step on the B65 (where the draft layer runs on the layer split), 26.8K code 78.5 -> 79.4 tok/s with the drafts kept (164 of 194), prose 59.7 -> 59.9; `draft_head_parity` passes on the B70, the B65 and the OpenCL CPU device. Built with icpx only: the free and contrib-llvm modes, the Windows cross build, other makers' GPUs and the other models that use `DraftHeadInt2` are unverified. Next in a draft step: the attention's low FP16 halves (not needed over INT8 K and V), then the routed experts.
 - **Found on the way, not fixed:** on the OpenCL CPU device the scalar attention (`qsa_decode_attn.cpp`) is wrong for
   most shapes (`qsa_dense_attn_parity` there: 7 of 12 fail, off FP64 by about the output scale; it passes on the
   B70). Development parity only, no GPU path is affected.
