@@ -81,3 +81,44 @@ against `qsa_dense_attn_*` and the scalar kernel as the fallback. The drafts are
 need not be bit-equal, only close enough to keep the drafts. At 26.8K the attention is about 0.8 ms a step and a
 window has about 2.5 steps: a kernel four times faster shortens the window by 1.5 ms, which is what 80 tok/s on
 code needs. After it, the draft head (0.23 ms a step).
+
+## The draft layer's attention on the matrix engines (`qsa_split_attn_batch`, the same day)
+
+The prompt's XMX attention (`qsa_prompt_attn.cpp`: INT8 codes exact in FP16, an online softmax over 16-cell chunks)
+already took this shape and these pools, but walks a query's cells in one work-group a KV head: two work-groups for
+a draft step's one query. `qsa_split_attn_batch` is that kernel with the cells spread over slots (a work-group
+each) and a merge of their partials; the draft layer calls it where the device reports the XMX combinations and the
+K/V is INT8, and the scalar kernel everywhere else. `XEMAYA_MTP_ATTN=ref` turns it off.
+
+The kernel alone (`qsa_split_attn_parity --bench`, B70, one query, back to back, us a call):
+
+| Cells | Scalar | 16 slots a KV head | 32 | 64 (the default on the B70: half as many work-groups as compute units) | 128 | 256 |
+|---|---|---|---|---|---|---|
+| 26,800 | 425 | 522 | 537 | 167 | 195 | 250 |
+| 1,000 | 111 | 33 | 46 | 36 | 59 | 69 |
+
+`qsa_split_attn_parity` on the B70: against FP64 at most 9.0e-07 of the output scale with the device's slot count
+(the scalar kernel 1.1e-06), against the scalar kernel at most 1.0e-06; 0 failures, also with `STRATA_NO_XMX=1` and
+`XEMAYA_MTP_ATTN=ref` (the kernel declines, the scalar one runs). On the OpenCL CPU device the kernel declines (no
+matrix engines) and the test reports a skip. `qsa_prompt_attn_parity 32768 512 2` still passes (the shared kernel).
+
+The same build, the same command, one load an arm, no kernel message:
+
+| Arm | 26.8K code tok/s (drafts kept) | 26.8K prose tok/s (drafts kept) | 59-token code | 68-token prose |
+|---|---|---|---|---|
+| `XEMAYA_MTP_ATTN=ref` (the scalar kernel) | 77.3 (165 of 194) | 58.0 (128 of 234) | 80.8 | 61.2 |
+| the default (the matrix engines) | 78.5 (164 of 195) | 59.7 (128 of 234) | 81.0 | 61.6 |
+| Strata v0.2.12 (from above) | 78.7 (167 of 196) | 59.2 (131 of 233) | 84.2 | 58.7 |
+
++1.2 tok/s on code and +1.7 on prose at 26.8K (the spread between runs is about 0.5), the drafts kept as before:
+level with Strata on code and past it on prose, not the 80 tok/s aimed at. `STRATA_MTP_PROFILE=1` over the whole
+benchmark, 1,238 steps: 1.13 ms a step (1.41 before), the attention 0.197 ms (0.458), now third:
+
+| Part | ms a step | Share |
+|---|---|---|
+| the draft head (q8, `native_mmvq` over 40,525 rows) | 0.228 | 20.1% |
+| the layer's attention | 0.197 | 17.4% |
+| the routed experts | 0.179 | 15.9% |
+| q projection, norm, rope, rotation | 0.079 | 7.0% |
+
+Next: the draft head (0.23 ms a step, a fixed cost at every context), then the routed experts.

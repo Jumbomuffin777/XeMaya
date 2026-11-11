@@ -26,6 +26,7 @@
 #include "strata/kernels/ngram.hpp"
 #include "strata/kernels/qsa.hpp"
 #include "strata/kernels/qsa_decode_attn.hpp"
+#include "strata/kernels/qsa_prompt_attn.hpp"
 #include "strata/kernels/quantize_act.hpp"
 #include "strata/kernels/rope.hpp"
 #include "strata/kernels/router_top10.hpp"
@@ -771,7 +772,9 @@ bool MtpDrafter::record_forward(int T, int step_row0, strata::gpu::Stream cs, st
         tick("q proj, norm, rope, fwht");
         const QsaAttnPools pools = qsa_attn_pools(st_);
         if (window_ > 0) window_ids(const_cast<int32_t*>(step), T, (int) window_, ident_, cap_, cs);
-        qsa_decode_attn_batch(qcur_, pools, ident_, step, cap_, s, attn_scratch_, attn_, T, cs);
+        // XeMaya: on the matrix engines where the device and the pools allow (qsa_prompt_attn.hpp), else the scalar kernel
+        if (!qsa_split_attn_batch(qcur_, pools, ident_, step, cap_, s, attn_scratch_, attn_, T, cs))
+            qsa_decode_attn_batch(qcur_, pools, ident_, step, cap_, s, attn_scratch_, attn_, T, cs);
         tick("window ids, attention");
         if (st_.kv_rot) fwht256_inplace_cuda(attn_, (int64_t) T * NH, cs);
         for (int t = 0; t < T; ++t)

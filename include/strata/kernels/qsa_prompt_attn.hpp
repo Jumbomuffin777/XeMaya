@@ -37,4 +37,16 @@ namespace strata::kernels {
 bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
                            int64_t cap, const QsaShapes& s, float* attn, int64_t n_q, void* stream);
 
+/// XeMaya: the same kernel for a few queries over many cells (the MTP draft layer's attention over its window, one
+/// query a draft step).  `qsa_prompt_attn_batch` walks a (query, KV head)'s cells in one work-group, which leaves
+/// most of the GPU idle when there are one to four queries; this spreads them over work-groups (as the scalar
+/// kernel's chunks) and merges their partials.  Same arguments and output as `qsa_decode_attn_batch`, the scratch
+/// too (`qsa_decode_attn_scratch_floats(cap, s)` floats a query).  INT8 K and V, 12 query heads a KV head of 256, on
+/// Intel's matrix engines; returns false (nothing launched) otherwise, or with XEMAYA_MTP_ATTN=ref, and the caller
+/// uses `qsa_decode_attn_batch`.  Not bitwise equal to it; `qsa_split_attn_parity` bounds the difference.
+bool qsa_split_attn_batch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
+                          int64_t cap, const QsaShapes& s, float* scratch, float* attn, int64_t n_q, void* stream);
+/// False with XEMAYA_MTP_ATTN=ref.
+bool qsa_split_attn_on();
+
 }  // namespace strata::kernels

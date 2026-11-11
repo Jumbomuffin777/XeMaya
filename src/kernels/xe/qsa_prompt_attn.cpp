@@ -33,8 +33,10 @@
 #include <sycl/sycl.hpp>
 #include <sycl/ext/intel/experimental/grf_size_properties.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <limits>
 
 namespace strata::kernels {
@@ -62,6 +64,12 @@ constexpr int KR = HD + 8;
 // then change no reference and leave the output unscaled.
 [[maybe_unused]] constexpr float TAU = 8.0f;
 [[maybe_unused]] constexpr float PSCALE = 16384.0f / 256.0f;   // 2^(14 - TAU)
+// XeMaya, split_slots: the work-groups of PromptAttn a launch gives every 64 compute units.  Measured on the Arc Pro
+// B70 alone (256 units; qsa_split_attn_parity --bench, 2026-11-11: one query, two KV heads, 26,800 cells, us a call
+// by slots a KV head: 16: 522, 32: 537, 64: 167, 128: 195, 256: 250; 1,000 cells: 33, 46, 36, 59, 69; the scalar kernel
+// 425 and 111): half as many work-groups as units.  It depends on how many of these 128-item groups the device runs
+// at once; a wrong count costs time only, and XEMAYA_MTP_ATTN_SLOTS overrides it.
+constexpr int SPLIT_GROUPS_PER_64CU = 32;
 
 // a local accessor's element `off` (row-major) as the multi_ptr joint_matrix loads from and stores to
 template<typename A>
@@ -73,7 +81,10 @@ inline auto at(const A& a, size_t off) {
 // 0-15 minus 8, exact in FP16, with a signed FP16 scale per 32 values; kv_q4.hpp)
 enum KvFmt { kF16 = 0, kI8 = 1, kQ4 = 2 };
 
-template<int KF, int VF, int CH>   // K's and V's KvFmt
+// SPLIT (XeMaya, qsa_split_attn_batch): a (query, KV head)'s selection is spread over n_slots work-groups, each walking
+// its own run of cells and leaving its rows' reference, sum and unnormalized output in `scratch` for the merge.
+// Without it every expression is the one this kernel had before.
+template<int KF, int VF, int CH, bool SPLIT = false>   // K's and V's KvFmt
 struct PromptAttn {
     static constexpr int KG = KF == kQ4 ? 2 * NG : NG;   // K's scale groups (q.k partials), V's
     static constexpr int VG = VF == kQ4 ? 2 * NG : NG;
@@ -129,6 +140,9 @@ struct PromptAttn {
     sycl::local_accessor<float, 3> part;    // [NG][R][CH]: q.k per 64-dim group; part[0] then holds p
     sycl::local_accessor<half, 3> pp;       // [2 VG][R][CH]: p' hi (2v) / lo (2v + 1) per V group
     sycl::local_accessor<float, 1> mrow, lsum, alpha;
+    int n_slots = 1;            // SPLIT: the work-groups a (query, KV head) has
+    float* scratch = nullptr;   // SPLIT, per query (stride): acc [slot][G][HD], m [slot][G], l [slot][G]
+    int64_t stride = 0;
 
     void operator()(sycl::nd_item<2> it) const {
 #if STRATA_DEVICE_NOT_INTEL
@@ -136,7 +150,8 @@ struct PromptAttn {
 #else
         const auto grp = it.get_group();
         const auto sg = it.get_sub_group();
-        const int64_t qi = (int64_t) it.get_group(0), kvh = (int64_t) it.get_group(1);
+        const int64_t qi = (int64_t) it.get_group(0);
+        const int64_t kvh = SPLIT ? (int64_t) it.get_group(1) / n_slots : (int64_t) it.get_group(1);
         const int t = (int) it.get_local_id(1), s = (int) sg.get_group_linear_id();
         const int lane = (int) sg.get_local_linear_id();
         const int g = s / 2, mt = s % 2;   // this sub-group's dim group and row tile
@@ -146,6 +161,24 @@ struct PromptAttn {
         const int32_t* sel = ids + qi * cap;
         const int n = steps[qi * kStepCount + kStepWidth];
         const size_t KH = 0, VH = (size_t) CH * KR, QH = 0, QL = (size_t) R * QS;
+        // the cells this work-group walks: all n, or its slot's run of them (whole chunks; the count is the step's, so
+        // a recorded launch follows the context)
+        int c_begin = 0, c_end = n;
+        const int64_t sl = SPLIT ? (int64_t) it.get_group(1) : 0;   // kvh * n_slots + slot
+        float* part_acc = nullptr;
+        float* part_ml = nullptr;
+        if constexpr (SPLIT) {
+            const int64_t slots_all = n_kv * n_slots;
+            const int span = ((n + n_slots - 1) / n_slots + CH - 1) / CH * CH;
+            c_begin = (int) sycl::min<int64_t>(n, (sl % n_slots) * span);
+            c_end = sycl::min(n, c_begin + span);
+            part_acc = scratch + qi * stride;
+            part_ml = part_acc + slots_all * G * HD;
+            if (c_begin >= c_end) {   // uniform over the work-group: a slot past the context
+                if (t < G) { part_ml[sl * G + t] = NEG_INF; part_ml[(slots_all + sl) * G + t] = 0.0f; }
+                return;
+            }
+        }
 
         // q: 12 heads + 4 zero rows, times 2^(14 - e) for its largest |value| < 2^e, as FP16 hi + lo
         float qm = 0.0f;
@@ -175,8 +208,8 @@ struct PromptAttn {
         for (int nt = 0; nt < 4; ++nt) mx::joint_matrix_fill(sg, acc[nt], 0.0f);
         float unit = 0.0f;
 
-        for (int c0 = 0; c0 < n; c0 += CH) {
-            const int nh = sycl::min(CH, n - c0);
+        for (int c0 = c_begin; c0 < c_end; c0 += CH) {
+            const int nh = sycl::min(CH, c_end - c0);
             if (t < CH) {
                 long long r = -1;
                 if (t < nh) {
@@ -376,6 +409,19 @@ struct PromptAttn {
             }
         }
         sycl::group_barrier(grp);
+        if constexpr (SPLIT) {
+            if (t < G) {
+                const int64_t slots_all = n_kv * n_slots;
+                part_ml[sl * G + t] = mrow[t];
+                part_ml[(slots_all + sl) * G + t] = lsum[t];
+            }
+            for (int nt = 0; nt < 4; ++nt)
+                ix::joint_matrix_apply(sg, acc[nt], [&](float& x, size_t row, size_t col) {
+                    const int r = mt * TM + (int) row;
+                    if (r < G) part_acc[(sl * G + r) * HD + g * 64 + nt * TN + (int) col] = x * unit;
+                });
+            return;
+        }
         for (int nt = 0; nt < 4; ++nt)
             ix::joint_matrix_apply(sg, acc[nt], [&](float& x, size_t row, size_t col) {
                 const int r = mt * TM + (int) row;
@@ -1059,7 +1105,92 @@ sycl::event launch_ptx(sycl::queue& q, const float* qv, QsaAttnPools p, const in
 constexpr int CHUNK = 16;
 static_assert(CHUNK == 16, "the p split gives each lane of a 16-wide sub-group one cell");
 
+// XeMaya: qsa_split_attn_batch's two launches.  The slots' partials are relative to each slot's own reference (base 2,
+// PromptAttn's lazy one), so the merge is the scalar kernel's with exp2.
+sycl::event launch_split(sycl::queue& q, const float* qv, QsaAttnPools p, const int32_t* ids, const int32_t* steps,
+                         int64_t cap, int64_t n_kv, int64_t page_size, float* scratch, int64_t stride, int n_slots,
+                         float* attn, int64_t n_q) {
+    const float scale_log2 = 1.4426950408889634f / std::sqrt((float) HD);
+    q.submit([&](sycl::handler& h) {
+        using K = PromptAttn<kI8, kI8, CHUNK, true>;
+        K k{qv, p, ids, steps, cap, n_kv, page_size, scale_log2, attn,
+            sycl::local_accessor<half, 1>(sycl::range<1>(K::KV_HALVES), h),
+            sycl::local_accessor<float, 2>(sycl::range<2>(CHUNK, K::KG), h),
+            sycl::local_accessor<float, 2>(sycl::range<2>(CHUNK, K::VG), h),
+            sycl::local_accessor<long long, 1>(sycl::range<1>(CHUNK), h),
+            sycl::local_accessor<float, 3>(sycl::range<3>(NG, R, CHUNK), h),
+            sycl::local_accessor<half, 3>(sycl::range<3>((size_t) 2 * K::VG, R, CHUNK), h),
+            sycl::local_accessor<float, 1>(sycl::range<1>(R), h),
+            sycl::local_accessor<float, 1>(sycl::range<1>(R), h),
+            sycl::local_accessor<float, 1>(sycl::range<1>(R), h),
+            n_slots, scratch, stride};
+        h.parallel_for(sycl::nd_range<2>({(size_t) n_q, (size_t) (n_kv * n_slots * WG)}, {1, WG}), k);
+    });
+    const int64_t n_head = n_kv * G, slots_all = n_kv * n_slots;
+    return q.parallel_for(sycl::nd_range<2>({(size_t) n_q, (size_t) (n_head * HD)}, {1, HD}), [=](sycl::nd_item<2> it) {
+        const int64_t qi = (int64_t) it.get_group(0), h = (int64_t) it.get_group(1);
+        const int64_t kvh = h / G, hl = h % G, d = (int64_t) it.get_local_id(1);
+        const float* part_acc = scratch + qi * stride;
+        const float* part_m = part_acc + slots_all * G * HD;
+        const float* part_l = part_m + slots_all * G;
+        float M = NEG_INF;
+        for (int c = 0; c < n_slots; ++c) M = sycl::fmax(M, part_m[(kvh * n_slots + c) * G + hl]);
+        float L = 0.0f, acc = 0.0f;
+        for (int c = 0; c < n_slots; ++c) {
+            const int64_t slot = kvh * n_slots + c;
+            const float m = part_m[slot * G + hl];
+            if (m == NEG_INF) continue;
+            const float w = sycl::exp2(m - M);
+            L = sycl::fma(part_l[slot * G + hl], w, L);
+            acc = sycl::fma(part_acc[(slot * G + hl) * HD + d], w, acc);
+        }
+        attn[(qi * n_head + h) * HD + d] = L > 0.0f ? acc / L : 0.0f;
+    });
+}
+
+// The work-groups a (query, KV head) is spread over: SPLIT_GROUPS_PER_64CU for every 64 of the device's compute units,
+// shared by the queries and KV heads; more only add each slot's fixed start (q's staging) and partials to merge.
+// XEMAYA_MTP_ATTN_SLOTS sets the count (the parity test's --bench).
+// At least 256 cells a slot at the capacity, and no more slots than the scratch of the scalar kernel holds.
+int split_slots(sycl::queue& q, int64_t cap, int64_t n_kv, int64_t n_q) {
+    const int64_t most = (cap + 63) / 64;   // qsa_decode_attn_scratch_floats' chunks
+    if (const char* e = std::getenv("XEMAYA_MTP_ATTN_SLOTS")) {
+        const long v = std::strtol(e, nullptr, 10);
+        if (v >= 1) return (int) std::min<int64_t>(v, most);
+    }
+    const int64_t cu = (int64_t) q.get_device().get_info<sycl::info::device::max_compute_units>();
+    const int64_t fit = std::max<int64_t>(1, cu * SPLIT_GROUPS_PER_64CU / 64 / std::max<int64_t>(1, n_kv * n_q));
+    return (int) std::max<int64_t>(1, std::min({fit, most, (cap + 255) / 256}));
+}
+
 }  // namespace
+
+bool qsa_split_attn_on() {
+    static const bool on = [] {
+        const char* v = std::getenv("XEMAYA_MTP_ATTN");
+        return v == nullptr || std::strcmp(v, "ref") != 0;
+    }();
+    return on;
+}
+
+bool qsa_split_attn_batch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
+                          int64_t cap, const QsaShapes& s, float* scratch, float* attn, int64_t n_q, void* stream) {
+    if (n_q <= 0) return true;
+    if (!qsa_split_attn_on()) return false;
+    if (s.head_dim != HD || s.n_head != (int64_t) G * s.n_head_kv || cap <= 0 || !ids || !steps || !pools.page_table ||
+        !scratch || s.page_size <= 0)
+        return false;
+    // INT8 K and V on Intel's matrix engines only: every other pool, shape and device keeps the scalar kernel
+    if (!pools.k_q || !pools.v_q || !pools.k_scale || !pools.v_scale || pools.k_q4 || pools.v_q4) return false;
+    if (!xmx_available(XmxType::f16)) return false;
+    auto& queue = core::Runtime::get().stream(stream);
+    if (queue.get_device().get_info<sycl::info::device::local_mem_size>() < local_bytes<kI8, kI8, CHUNK>()) return false;
+    const int n_slots = split_slots(queue, cap, s.n_head_kv, n_q);
+    const auto e = launch_split(queue, q, pools, ids, steps, cap, s.n_head_kv, s.page_size, scratch,
+                                (int64_t) qsa_decode_attn_scratch_floats(cap, s), n_slots, attn, n_q);
+    if (!stream) core::Runtime::get().wait(e, "qsa_split_attn_batch");
+    return true;
+}
 
 bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
                            int64_t cap, const QsaShapes& s, float* attn, int64_t n_q, void* stream) {

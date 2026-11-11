@@ -25,6 +25,19 @@ https://github.com/Jumbomuffin777/XeMaya. Every item below was run on the develo
   tok/s (code / prose at 26.8K) against 78.7 / 59.2. The measured-cost window rule is not the fix (74.9 / 59.3);
   nothing was changed in the engine. The gap on code is the draft step, about 0.5 ms a step more than Strata's at
   any context. **Next:** a per-kernel timing of `MtpDrafter::record_forward`, then the fixed cost of its launches.
+- **The draft layer's attention on the matrix engines** (`qsa_split_attn_batch` in `qsa_prompt_attn.cpp`: the
+  prompt's XMX kernel with a query's cells spread over work-groups and a merge; INT8 K/V, chosen from the device's
+  matrix combinations, the scalar kernel otherwise, `XEMAYA_MTP_ATTN=ref` turns it off). B70 + B65, the same
+  benchmark: **78.5 / 59.7 tok/s** (code / prose at 26.8K) against 77.3 / 58.0 with it off, drafts kept 164 of 195
+  against 165 of 194; Strata v0.2.12 is 78.7 / 59.2. The attention is 0.197 ms a draft step (0.458 before); the
+  target of 80 on code is not reached. `qsa_split_attn_parity` passes on the B70 (1.0e-06 of the output scale from
+  the scalar kernel) and skips on the OpenCL CPU device, which has no matrix engines. Built with icpx only: the free
+  and contrib-llvm modes with intel/llvm, a smaller GPU, the UHD 770 and the Windows cross build are **unverified**.
+  The slot count is measured on the B70 alone. **Next:** the draft head (0.228 ms a step, now the largest part),
+  then the routed experts (0.179).
+- **Found on the way, not fixed:** on the OpenCL CPU device the scalar attention (`qsa_decode_attn.cpp`) is wrong for
+  most shapes (`qsa_dense_attn_parity` there: 7 of 12 fail, off FP64 by about the output scale; it passes on the
+  B70). Development parity only, no GPU path is affected.
 
 ## Release 0.1.0-alpha.1 (2026-11-10 evening; read this first)
 
