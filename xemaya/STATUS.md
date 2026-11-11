@@ -11,6 +11,21 @@
 Updated 2026-11-10 (the hybrid segment, checked on the CPU device; then the handoff of 12:30 UTC: MiniMax-M3.1-Flash on the three Arc cards).
 https://github.com/Jumbomuffin777/XeMaya. Every item below was run on the development host unless marked otherwise.
 
+## 2026-11-11: 0.1.0-alpha.2, the new drive, Qwen against Strata (read this first)
+
+- **0.1.0-alpha.2 is published** (tag `xemaya-0.1.0-alpha.2`, a pre-release): pull request #1 by bettercallcaleb (a
+  DSML pack template that is not valid UTF-8 no longer stops the server's start). Checked: the release build's 16
+  tests, `serve/test_dsml.py` 26 passed, CI on the tagged commit, a clean install in an Ubuntu 24.04 container, the
+  published build on B70 + B65 + B60 (DeepSeek-V4.1 Coder, 16 of 16 on both references), the public downloads'
+  checksums. A pull request is merged locally and pushed, not with GitHub's button (its merge commit takes the
+  account's primary e-mail address).
+- **The model drive was replaced** (the same mountpoint; `LOCAL.md`). The release helpers that lived in the session's
+  temporary folder are now in `<work>/release-tools/` (`verify_install.sh`, `gpu_smoke.sh`, patchelf).
+- **Qwen3.8 decode against Strata v0.2.12** ([the record](benchmarks/2026-11-11-qwen-ab/README.md)): 77.3 / 57.8
+  tok/s (code / prose at 26.8K) against 78.7 / 59.2. The measured-cost window rule is not the fix (74.9 / 59.3);
+  nothing was changed in the engine. The gap on code is the draft step, about 0.5 ms a step more than Strata's at
+  any context. **Next:** a per-kernel timing of `MtpDrafter::record_forward`, then the fixed cost of its launches.
+
 ## Release 0.1.0-alpha.1 (2026-11-10 evening; read this first)
 
 The first public release, Linux and Intel Arc: `tools/xemaya/release.sh` builds it from a commit, `xemaya.sh` is its
