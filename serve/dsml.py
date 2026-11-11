@@ -245,6 +245,8 @@ def pick_template(pack_template: Path | None) -> tuple[Path, bool]:
                 return pack_template, False
         except OSError:
             return pack_template, False
+        except UnicodeError:
+            return FIXTURE_TEMPLATE, True
         return FIXTURE_TEMPLATE, True
     return FIXTURE_TEMPLATE, False
 

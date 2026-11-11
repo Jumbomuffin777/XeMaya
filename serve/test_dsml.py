@@ -51,6 +51,14 @@ class Template(unittest.TestCase):
     def setUpClass(cls):
         cls.tpl = ChatTemplate(TEMPLATE)
 
+    def test_invalid_utf8_pack_template_falls_back(self):
+        import tempfile
+        from serve import dsml
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "chat_template.jinja"
+            path.write_bytes(b"\xff\xfe")
+            self.assertEqual(dsml.pick_template(path), (dsml.FIXTURE_TEMPLATE, True))
+
     def test_the_golden_prompts(self):
         for case in GOLDEN:
             messages, tools, kw = openai_to_messages(case["request"])
