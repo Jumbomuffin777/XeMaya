@@ -156,8 +156,25 @@ The same command as above, one load, no kernel message; the arm without it is th
 The engine's own timing of the head at the start: 216 -> 130 us a step. +0.9 tok/s on code at 26.8K with the drafts
 kept as before, past Strata there; prose +0.2, inside the spread between runs (about 0.5). Not yet the 80 aimed at.
 
-What is left in a draft step at 26.8K on the B65, from the benches: the attention about 306 us (167 on the B70; its
+What is left in a draft step at 26.8K on the B65, from the benches: the attention about 285 us (167 on the B70; its
 slot count was measured on the B70 alone, and the B65's 80 slots are near its best, 32 to 128 give 335-355), the
-head about 130, of which the top 16 is 39. The attention keeps each query and each weight as two FP16 halves for
-the main model's parity; over INT8 K and V the draft layer does not need the low halves, which is half of its
-matrix products. Next: that, then the routed experts.
+head about 130, of which the top 16 is 39.
+
+### The attention's low FP16 halves: no gain (tried, not kept)
+
+The attention keeps each query and each weight as two FP16 halves for the main model's parity. Leaving the low
+halves' products out (half of the matrix products; the result within 1.3e-03 of the output scale of FP64, against
+1e-06) changed one query over 26,800 cells from 286 to 283 us on the B65 and from 167 to 165 on the B70, and over
+1,000 cells not at all: the matrix products are not what the kernel's time goes to. The change was not kept.
+
+What the time follows instead is the work-groups the card runs at once. By slot count, B65: 4 slots 2,490 us, 8
+1,235, 16 631, 32 340, then flat to 128; a work-group of 256 items is 16 sub-groups, and past about 40 of them at
+once (64 on the B70) more slots only queue. Each chunk of 16 cells costs a work-group about 3 us whatever its
+products cost: five barriers, the gather of K and V into local memory, the softmax pass. Lowering that is a rewrite
+of the chunk loop, not a switch.
+
+The larger lever is where the draft layer runs: on the layer split it sits with the last stage, on the B65, and
+the B70, idle while a draft chain runs, does the same attention in 165 us against 283 and the same head's products
+in 41 against 69. Moving the drafter (its weights, its K/V and the draft head) to the first GPU costs one residual
+hand-off a chain; by the two measurements above (about +0.5% code for 100 us off a draft step) it is the step that
+could pass 80. Not built.
