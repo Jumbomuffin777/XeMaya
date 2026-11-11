@@ -18,7 +18,7 @@ set(XESTRATA_VERSION "${STRATA_UPSTREAM_VERSION}-${XESTRATA_REVISION}")
 set(STRATA_VERSION_NAME "xe${XESTRATA_VERSION}")
 # XeMaya's own version (semantic, with a pre-release part): the release's tag is xemaya-<version>, and the engine
 # says it beside the XeStrata version it is built on (--version).  The interfaces keep STRATA_VERSION.
-set(XEMAYA_VERSION "0.1.0-alpha.1")
+set(XEMAYA_VERSION "0.1.0-alpha.2")
 # The packages' version: an upstream pre-release (0.2.0-beta) with "~" for its "-" (0.2.0~beta), which deb and rpm
 # sort before the release it leads to (0.2.0), so the release's package upgrades it.  The version name keeps the "-":
 # a git tag cannot hold a "~".

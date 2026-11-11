@@ -4,6 +4,23 @@ SPDX-License-Identifier: LGPL-3.0-or-later
 -->
 # Changelog
 
+## 0.1.0-alpha.2 — 2026-11-11
+
+### Fixed
+
+- The server no longer fails to start for a DeepSeek-V4.1 model whose pack's chat template is not valid UTF-8: it
+  falls back to the V4.1 template and says so (`serve/dsml.py`, with a regression test). Thanks to
+  **[@bettercallcaleb](https://github.com/bettercallcaleb)** for the report and the fix
+  ([#1](https://github.com/Jumbomuffin777/XeMaya/pull/1)), XeMaya's first outside contribution.
+
+### Added
+
+- Recorded speeds of the regular DeepSeek-V4.1-Flash file (384 experts) on two and three GPUs
+  (`xemaya/benchmarks/2026-11-10-ds41-flash-384/`).
+
+Otherwise the same engine as 0.1.0-alpha.1, rebuilt from this commit; what the build was checked on is in the
+release notes (`xemaya/RELEASE-0.1.0-alpha.2.md`).
+
 ## 0.1.0-alpha.1 — 2026-11-10
 
 The first public release: an alpha for **Linux and Intel Arc GPUs**. Built on XeStrata xe0.2.8-1.

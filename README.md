@@ -21,10 +21,10 @@ DeepSeek-V4.1-Flash. It runs native SYCL / Level Zero kernels,
 including Intel XMX paths, with multi-GPU layer splitting and VRAM / RAM / SSD expert tiers.
 The engine is built on XeStrata, rather than a llama.cpp server wrapper or a CUDA compatibility layer.
 
-> **Alpha (0.1.0-alpha.1, 2026-11-10): Linux, Intel Arc GPUs.** Reference agreement is limited to the
-> models, prompts and hardware recorded below; it does not establish production readiness. The release
-> build passed its host tests, CPU-device kernel parity and clean installs, and its release candidate
-> matched the DeepSeek-V4.1 reference on three Arc cards (16/16 on both prompts); the other GPU
+> **Alpha (0.1.0-alpha.2, 2026-11-11): Linux, Intel Arc GPUs.** Reference agreement is limited to the
+> models, prompts and hardware recorded below; it does not establish production readiness. Each release
+> build passes its host tests, CPU-device kernel parity, a clean install and a DeepSeek-V4.1 reference
+> check on three Arc cards before it is published (its release notes have the result); the other GPU
 > results below come from development builds of earlier commits. Read the [known limitations](INSTALL.md#known-limitations).
 
 ## Install
