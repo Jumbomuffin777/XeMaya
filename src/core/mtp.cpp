@@ -1113,6 +1113,31 @@ bool MtpDrafter::prefill(const float* R_rows, const int32_t* next_tokens, int64_
     return true;
 }
 
+// STRATA_MTP_TIMING=1 (a diagnostic): where a draft round's time goes on the host's clock - the staging before the
+// launch, the round graph up to draft 0, each later step graph up to its draft, and the last sync - with the graphs'
+// node counts; printed every 64 rounds and at the end.
+namespace {
+struct DraftTiming {
+    double prep = 0, round = 0, step = 0, sync = 0;
+    int64_t rounds = 0, steps = 0, round_T = 0;
+    size_t round_nodes = 0, step_nodes = 0;
+    void say() const {
+        if (rounds == 0) return;
+        std::fprintf(stderr, "strata mtp timing: %lld rounds (avg T %.2f): staging %.3f ms, round graph %.3f ms (%zu nodes), "
+                             "%.2f steps a round at %.3f ms each (%zu nodes), last sync %.3f ms; %.3f ms a round\n",
+                     (long long) rounds, (double) round_T / (double) rounds, prep / (double) rounds, round / (double) rounds,
+                     round_nodes, (double) steps / (double) rounds, steps ? step / (double) steps : 0.0, step_nodes,
+                     sync / (double) rounds, (prep + round + step + sync) / (double) rounds);
+    }
+    ~DraftTiming() { say(); }
+};
+bool draft_timing_on() {
+    static const bool on = [] { const char* v = std::getenv("STRATA_MTP_TIMING"); return v && v[0] == '1'; }();
+    return on;
+}
+DraftTiming g_draft_timing;
+}  // namespace
+
 bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* drafts, std::string& err,
                        float* probs, const More& more, int* n_drafts) {
     const OnDevice on_device(device_);
@@ -1177,6 +1202,9 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
         }
         return true;
     };
+    const bool tm = draft_timing_on();
+    Clock::time_point tm0 = Clock::now();
+    if (tm) g_draft_timing.prep += ms_since(t0);
     if (!strata::gpu::graph_launch(cp ? round_exec_c_[T] : round_exec_[T], cs_)) {
         err = std::string("mtp draft: ") + strata::gpu::last_error();
         return false;
@@ -1185,6 +1213,12 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
     prefetch_ple(tokens[a]);
     progress_at("mtp draft: waiting for the GPU");   // upstream #2065: a stall here read as the verify window before it
     if (!wait_step(0)) return false;
+    if (tm) {
+        g_draft_timing.round += ms_since(tm0);
+        g_draft_timing.round_T += T;
+        g_draft_timing.round_nodes = strata::gpu::graph_nodes(cp ? round_exec_c_[T] : round_exec_[T]);
+        tm0 = Clock::now();
+    }
     drafts[0] = ((volatile int32_t*) h_out_)[0];
     if (top2_env()) { strata::gpu::stream_sync(cs_); record_top2(0); }
     float pl[strata::kernels::kVerifyMaxT];   // the drafts' probabilities for `more`, where the caller keeps none
@@ -1200,6 +1234,12 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
         (void) strata::gpu::stream_idle(cs_);
         prefetch_ple(drafts[j - 1]);
         if (!wait_step(j)) return false;
+        if (tm) {
+            g_draft_timing.step += ms_since(tm0);
+            ++g_draft_timing.steps;
+            g_draft_timing.step_nodes = strata::gpu::graph_nodes(cp ? step_exec_c_[j] : step_exec_[j]);
+            tm0 = Clock::now();
+        }
         drafts[j] = ((volatile int32_t*) h_out_)[j];
         if (top2_env()) { strata::gpu::stream_sync(cs_); record_top2(j); }
         pr[j] = ((volatile float*) h_prob_)[j];
@@ -1209,6 +1249,10 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
     if (!strata::gpu::stream_sync(cs_)) {
         err = std::string("mtp draft: ") + strata::gpu::last_error();
         return false;
+    }
+    if (tm) {
+        g_draft_timing.sync += ms_since(tm0);
+        if ((++g_draft_timing.rounds & 63) == 0) g_draft_timing.say();
     }
     for (int j = n; j < max_t_ - 1; ++j) { drafts[j] = 0; if (probs) probs[j] = 0.0f; }
     if (n_drafts) *n_drafts = n;

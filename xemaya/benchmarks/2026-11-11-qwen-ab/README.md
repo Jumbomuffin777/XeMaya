@@ -31,5 +31,23 @@ What this settles:
   the same at 59 tokens and at 26.8K, so it is a fixed cost of the step (its ~20 launches), not its attention
   over the context.
 
-Not done: a per-kernel timing of the draft step (`MtpDrafter::record_forward`), which is the next measurement; 80
-tok/s on code needs the window 1.5 ms shorter, more than the draft gap alone (1.0-1.25 ms).
+## The draft round's parts (`STRATA_MTP_TIMING=1`, the host's clock)
+
+| Context | Round graph (the window's K/V catch-up and draft 0) | Each later step graph | Steps a round |
+|---|---|---|---|
+| 59 and 68 tokens | 1.49-1.52 ms, 68-79 launches | 0.98 ms, 67 launches | 1.4-1.5 |
+| after 26.8K (the cumulative averages rise to) | 1.87-1.93 ms | 1.30-1.36 ms | 1.5 |
+
+Staging before the launch is 0.025 ms and the last sync 0.04 ms: the time is in the two graphs. A step is 67
+launches in about 1 ms at a short context, some 15 us a launch, so it is the number of launches that costs, and
+0.3-0.6 ms more once the layer's attention reads 26.8K cells.
+
+Ruled out: the SYCL runtime. The same engine on the runtime Strata v0.2.12 ships (oneAPI 2026.1.1; XeMaya's is
+2026.2) gives the same round and step times (1.87 and 1.31 ms). oneMKL's backend does not load against that
+runtime, so that run's other numbers do not compare.
+
+Next: fewer launches a step. The step's kernels are in `MtpDrafter::record_forward`; the candidates are the ones
+that run a row at a time or as separate small copies (the K/V append and its rotations, the q copy, the hyper-
+connection reads and writes, the router's two launches, the combine). Each fused kernel needs its parity test, so
+this is engine work of days, not a setting. 80 tok/s on code needs the window 1.5 ms shorter; halving the step's
+launches would give about 1 ms.
