@@ -64,3 +64,38 @@ would read about 4 TB.
 
 `ds41_parity` passes on the B70 and on the B65 with this build; `unbuffered_read_test` (475 ranges against the same
 bytes read through the cache) passes.
+
+## 2026-11-12: the experts a chunk uploads stay in the tier's free slots
+
+While a layer's tier has free slots, the missed experts a chunk routes to most are copied into those slots instead of
+the staging and stay there (`prompt_routed`; `XEMAYA_PROMPT_KEEP=0` keeps none): the next chunks read them where they
+lie, and the round after the prompt has them already. Same settings, prompts and host as above; "before" is the
+default column of the table above (the same binary but for this change), not run again.
+
+| Prompt | Before | Now | Read from the drive | The 63 tokens after | Routed experts hit in them |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 576 tokens | 27.5 tok/s (21.0 s) | **36.3** (15.9 s) | 104 -> 97 GB | 13.1 -> 14.7 tok/s | 91.0 -> 93.9% |
+| 2,048 tokens | 47.4 (43.2 s) | **71.6** (28.6 s) | 213 -> 138 GB | 11.4 -> 16.2 | 88.9 -> 91.8% |
+| 8,192 tokens | 46.2 (177.1 s) | **91.8** (89.2 s) | 804 -> 218 GB | 8.7 -> 15.9 | 89.6 -> 91.1% |
+
+Against the path before both days' changes: 20.0 -> 36.3, 36.5 -> 71.6 and 35.2 -> 91.8 tok/s. The generated tokens
+are the same as before at every length. The tier is full after the prompt (6,536 to 6,540 of 6,540 slots; 5,247 to
+5,793 before), which is where the decode's gain comes from.
+
+Checks with this build, each through `gpu_job.sh`, no kernel message:
+
+- DeepSeek-V4.1-Flash (this file) forced along its llama.cpp reference (576-token prompt): top-1 equal 16 of 16,
+  median |d logprob| 0.012, max 0.097. The Coder file along its reference: 16 of 16, median 0.010, max 0.155 (its
+  record: the same).
+- Qwen3.8-Flash-Next, the benchmark of [2026-11-11](../2026-11-11-qwen-ab/README.md) (B70 + B65, `--spec 4`): 26.8K
+  code 79.4 -> 79.2 tok/s, prose 59.9 -> 59.9, the drafts kept the same in all nine jobs (164 of 194, 128 of 234),
+  prefill of 26,800 tokens 14.28 -> 14.38 s and 13.82 -> 13.82 s. Its prompt does not go through this staging.
+- GLM-5.3-Flash Maya-S v2 forced along chat-agent (198-token prompt): top-1 equal **125 of 128**, median 0.012, max
+  0.395; with `XEMAYA_PROMPT_KEEP=0`, and with all of these changes off, 126 of 128 with the same median and maximum
+  (its record). The tier holds other experts after the prompt (8,706 swaps against 8,495), and an expert computed on
+  the GPU and on the CPU pool differs in rounding: the misses move from step 124 to steps 2 and 57 (step 2's margin
+  in the reference is 0.21). Its prompt: 20.3 s with every change off, 16.8 s with the pinned reads and the batched
+  fill, 12.2 s with the kept experts.
+
+What limits a long prompt now: the 57% of the experts that do not fit the VRAM are still read once a chunk (8,192
+tokens: 218 GB, part of it from the file cache).

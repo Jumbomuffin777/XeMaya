@@ -631,6 +631,28 @@ bool PlainModel::prompt_routed(int64_t ml, int64_t T, bool cpu_share, int32_t* r
         ahead_ok.resize(ahead.size());
         for (size_t i = 0; i < ahead.size(); ++i) ahead_ok[i].assign(ahead[i].size(), 0);
     }
+    // XeMaya: a prompt whose experts come from the files reads a layer's missed ones again for every chunk.  While the
+    // layer's tier has free slots, the missed experts this chunk routes to most are copied into those slots instead of
+    // the staging and stay: the next chunks (and the decode) read them where they lie.  The most-routed first, as the
+    // round after the prompt fills free slots (choose_swaps), which then has those slots' experts already and corrects
+    // the rest from the whole prompt's counts.  Only with the adaptive tier (a tier without it keeps its free slots),
+    // not with a RAM copy of what VRAM does not hold (its exchanges track the tier).  XEMAYA_PROMPT_KEEP=0: none kept.
+    // (DeepSeek-V4.1-Flash IQ2_XXS on the B70 + B65, 2026-11-12: an 8,192-token prompt read 804 GB from the drive.)
+    static const bool keep_env = [] {
+        const char* v = std::getenv("XEMAYA_PROMPT_KEEP");
+        return v == nullptr || v[0] != '0';
+    }();
+    std::vector<char> keep;
+    int64_t kept = 0;
+    if (keep_env && use_mmq && transient && complement_ == nullptr && !disp_.usage.empty() && !free_[(size_t) ml].empty()) {
+        std::vector<int32_t> miss;
+        for (int32_t e : experts)
+            if (res_[(size_t) (ml * E + e)] < 0 && src_->transient(ml, e)) miss.push_back(e);
+        std::stable_sort(miss.begin(), miss.end(), [&](int32_t a, int32_t b) { return count[(size_t) a] > count[(size_t) b]; });
+        miss.resize(std::min(miss.size(), free_[(size_t) ml].size()));
+        keep.assign((size_t) E, 0);
+        for (int32_t e : miss) keep[(size_t) e] = 1;
+    }
     std::future<void> fetch;
     bool fetch_bad = false;
     auto fetch_group = [&](size_t i) {
@@ -696,6 +718,11 @@ bool PlainModel::prompt_routed(int64_t ml, int64_t T, bool cpu_share, int32_t* r
                 if (staged == PromptBufs::kGroup) break;
                 const size_t at = (size_t) ((ovl ? h * PromptBufs::kGroup : 0) + staged++) * lay.max_blob;
                 uint8_t* dst = P.stage + at;
+                int32_t keep_slot = -1;
+                if (!keep.empty() && keep[(size_t) e] && !free_[(size_t) ml].empty()) {   // into a slot, to stay
+                    keep_slot = free_[(size_t) ml].back();
+                    dst = cache_.device_slot(keep_slot);
+                }
                 // read into its place in the half by the read-ahead (ahead_at), else the source's blob copied there
                 bool in_half = false;
                 if (pinned_reads && gi < ahead.size())
@@ -711,6 +738,12 @@ bool PlainModel::prompt_routed(int64_t ml, int64_t T, bool cpu_share, int32_t* r
                 const bool copied = hb != nullptr && (transient && !bounce ? strata::gpu::copy(dst, hb, f.bytes)
                                                                            : strata::gpu::copy_async(dst, hb, f.bytes, ccs));
                 if (!copied) { err = "plain prompt: an expert could not be read"; return false; }
+                if (keep_slot >= 0) {   // the copy is queued before the products that read it; the plan from the next chunk
+                    free_[(size_t) ml].pop_back();
+                    res_[(size_t) (ml * E + e)] = keep_slot;
+                    ++swaps_total_;
+                    ++kept;
+                }
                 blob = dst;
             }
             P.h_wtab[g1] = blob;
@@ -772,6 +805,7 @@ bool PlainModel::prompt_routed(int64_t ml, int64_t T, bool cpu_share, int32_t* r
         return false;
     st.cpu_n += (int64_t) cpu_experts.size();
     for (int32_t e : cpu_experts) st.cpu_rows += count[(size_t) e];
+    st.miss_n += kept;   // read from the files for this chunk as the others
     for (int64_t e = 0; e < E; ++e) st.miss_n += count[(size_t) e] > 0 && res_[(size_t) (ml * E + e)] < 0;
     for (size_t g0 = 0; !use_mmq && g0 < experts.size(); g0 += PromptBufs::kGroup) {
         const int G = (int) std::min<size_t>(PromptBufs::kGroup, experts.size() - g0);

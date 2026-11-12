@@ -11,7 +11,26 @@
 Updated 2026-11-10 (the hybrid segment, checked on the CPU device; then the handoff of 12:30 UTC: MiniMax-M3.1-Flash on the three Arc cards).
 https://github.com/Jumbomuffin777/XeMaya. Every item below was run on the development host unless marked otherwise.
 
-## 2026-11-11: DeepSeek-V4.1-Flash (384 experts) prefill on B70 + B65 (read this first)
+## 2026-11-12: DeepSeek-V4.1-Flash prefill, the experts kept in VRAM during the prompt (read this first)
+
+[The record](benchmarks/2026-11-11-ds41-flash-prefill/README.md), its last section. While a layer's tier has free
+slots, the missed experts a chunk routes to most go into those slots and stay (`prompt_routed`,
+`XEMAYA_PROMPT_KEEP=0` turns it off), so later chunks do not read them from the files again.
+
+- **Prefill, B70 + B65:** 27.5 -> **36.3 tok/s** at 576 tokens, 47.4 -> **71.6** at 2,048, 46.2 -> **91.8** at 8,192
+  (804 -> 218 GB read from the drive); against the path before 2026-11-11: 20.0, 36.5 and 35.2. The 63 tokens after
+  it 13.1 -> 14.7, 11.4 -> 16.2 and 8.7 -> 15.9 tok/s (the tier is full after the prompt); the generated tokens the same.
+- **Checked:** this file and the Coder file forced along their llama.cpp references, 16 of 16 each; Qwen3.8's
+  benchmark unchanged (26.8K code 79.2 tok/s, prose 59.9, the same drafts kept; its prompt does not use this staging).
+- **GLM-5.3 Maya-S v2 forced along chat-agent: 125 of 128** (median 0.012, max 0.395) against 126 of 128 with
+  `XEMAYA_PROMPT_KEEP=0` (its record; the same median and maximum): the tier holds other experts after the prompt,
+  and the misses at near ties move. Not treated as a fault; `XEMAYA_PROMPT_KEEP=0` gives the old tier.
+- Unbuffered reads stay opt-in (`XEMAYA_EXPERT_UNBUFFERED=1`); not measured again with the kept experts.
+- Built with icpx only: the free and contrib-llvm modes with intel/llvm, the Windows cross build, a smaller GPU, other
+  makers' GPUs and MiniMax are **unverified**. The lint ran the license classes only.
+- **Next:** the experts that do not fit the VRAM (57%) are still read once a chunk.
+
+## 2026-11-11: DeepSeek-V4.1-Flash (384 experts) prefill on B70 + B65
 
 [The record](benchmarks/2026-11-11-ds41-flash-prefill/README.md). The regular Flash file, not the Coder one; the model
 is larger than the VRAM and the RAM, so a prompt reads its experts from the files.
