@@ -11,7 +11,32 @@
 Updated 2026-11-10 (the hybrid segment, checked on the CPU device; then the handoff of 12:30 UTC: MiniMax-M3.1-Flash on the three Arc cards).
 https://github.com/Jumbomuffin777/XeMaya. Every item below was run on the development host unless marked otherwise.
 
-## 2026-11-11: 0.1.0-alpha.2, the new drive, Qwen against Strata (read this first)
+## 2026-11-11: DeepSeek-V4.1-Flash (384 experts) prefill on B70 + B65 (read this first)
+
+[The record](benchmarks/2026-11-11-ds41-flash-prefill/README.md). The regular Flash file, not the Coder one; the model
+is larger than the VRAM and the RAM, so a prompt reads its experts from the files.
+
+- **Where the time was** (576 tokens, 28.1 s): the routed experts 20.0 s, the VRAM tiers' fill after the prompt 5.6 s,
+  everything else 2.4 s (the attention 0.17 s). The experts' time was the prompt thread's copy of each expert from the
+  source's buffer into the pinned staging (4.3 GB/s), not the GPUs and not the drive.
+- **Changed:** the read-ahead threads read each expert straight into the pinned staging (`ExpertSource::read_blobs`,
+  `XEMAYA_PROMPT_PINNED_READS=0` turns it off), and the tiers' fill after the prompt reads 16 experts side by side
+  (`PlainModel::fill_slots`, `XEMAYA_TIER_FILL_BATCH=0`). Prefill **20.0 -> 27.5 tok/s** at 576 tokens, **36.5 ->
+  47.4** at 2,048, **35.2 -> 46.2** at 8,192; the 63 tokens after it 12.8 -> 13.1, 11.3 -> 11.4 and 8.4 -> 8.7 tok/s,
+  the generated tokens the same.
+- **Opt-in, not the default:** `XEMAYA_EXPERT_UNBUFFERED=1` reads the prompt's experts past the file cache
+  (`src/platform/unbuffered_read.cpp`, Linux): 32.8 / 60.3 / 60.8 tok/s, but the tokens after a 576- or 2,048-token
+  prompt come 23% slower (the file cache is cold for the CPU pool's experts). The whole run is shorter with it at
+  every length measured: the owner's choice.
+- **Checked:** `ds41_parity` on the B70 and on the B65, `unbuffered_read_test`, the same generated tokens in every
+  arm, no kernel message. `tools/lint/run.sh` ran only the license classes (the other lints are not installed here).
+  Built with icpx only: the free and contrib-llvm modes with intel/llvm, the Windows cross build, a smaller GPU, other
+  makers' GPUs, and GLM-5.3 / MiniMax / Qwen3.8 prompts through the same staging are **unverified**.
+- **Next:** a chunk routes to nearly all 384 experts of a layer and none stays in VRAM during the prompt, so the
+  123 GiB are read once a chunk of 1,024 tokens (8,192 tokens: 804 GB). Keep what a chunk uploads in the tier's free
+  slots (43% fit), then a longer chunk. A 32K prompt was not run (about 4 TB of reads).
+
+## 2026-11-11: 0.1.0-alpha.2, the new drive, Qwen against Strata
 
 - **0.1.0-alpha.2 is published** (tag `xemaya-0.1.0-alpha.2`, a pre-release): pull request #1 by bettercallcaleb (a
   DSML pack template that is not valid UTF-8 no longer stops the server's start). Checked: the release build's 16

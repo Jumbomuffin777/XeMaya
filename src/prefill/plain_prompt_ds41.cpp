@@ -378,10 +378,13 @@ bool PlainModel::prompt_chunks_ds41(const int32_t* tokens, int64_t n, int64_t po
         std::fprintf(stderr, "strata plain: DeepSeek prompt of %lld tokens (blocks %lld..%lld): mHC %.1f ms, attention "
                              "projections %.1f, state and indexer %.1f, attention %.1f, its output %.1f, grouping %.1f, "
                              "experts %.1f, shared expert and router %.1f, Engram %.1f, staging %.1f, head and sync %.1f, "
-                             "the rest %.1f; experts not in VRAM %lld, on the CPU %lld (%lld rows)\n",
+                             "the rest %.1f; experts not in VRAM %lld, on the CPU %lld (%lld rows); of the experts' time "
+                             "%.1f ms waiting for the files, %.1f copying into pinned memory, %.1f waiting for those "
+                             "copies\n",
                      (long long) n, (long long) lb_, (long long) le_ - 1, stage_ms[0], stage_ms[1], stage_ms[2],
                      stage_ms[3], stage_ms[4], stage_ms[5], stage_ms[6], stage_ms[7], stage_ms[8], stage_ms[9],
-                     stage_ms[10], stage_ms[11], (long long) rst.miss_n, (long long) rst.cpu_n, (long long) rst.cpu_rows);
+                     stage_ms[10], stage_ms[11], (long long) rst.miss_n, (long long) rst.cpu_n, (long long) rst.cpu_rows,
+                     rst.fetch_ms, rst.bounce_ms, rst.half_ms);
     if (!last()) return true;
     *out = ((volatile int32_t*) h_out_)[0];
     if (logits != nullptr && !strata::gpu::copy(logits, logits_, (size_t) n_vocab_ * 4)) {

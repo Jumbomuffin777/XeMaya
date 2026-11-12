@@ -223,6 +223,15 @@ public:
     /// The `n` experts of `layer` the CPU is about to ask `blob` for, all at once: a source that reads a file may
     /// fetch them in parallel.  The bytes `blob` then returns are the same.  Default: nothing.
     virtual void prefetch(int64_t layer, const int64_t* experts, int64_t n) { (void) layer; (void) experts; (void) n; }
+    /// XeMaya: `n` experts (`layers[i]`, `experts[i]`) read into the caller's buffers (`dst[i]`, a blob's bytes each;
+    /// pinned memory of a prompt's staging or of the tier's fills), in parallel where the source can, instead of
+    /// `prefetch` and a copy of what `blob` hands out.  `ok[i]` is 1 for each blob written; 0 leaves the expert to
+    /// `blob` or `copy_blob`.  Only the experts a source assembles from its files (`transient`) are read this way.
+    /// Default: none.
+    virtual void read_blobs(const int64_t* layers, const int64_t* experts, int64_t n, uint8_t* const* dst, uint8_t* ok) {
+        (void) layers; (void) experts; (void) dst;
+        for (int64_t i = 0; i < n; ++i) ok[i] = 0;
+    }
     /// `prefetch` for the decode's CPU experts with zero-copy (upstream 149, STRATA_COLD_OVERLAP=4): a source may leave
     /// an expert whose bytes are already in RAM where they are and answer `zc_roles` for it instead of `blob`.  Returns
     /// the experts still being read (0: all ready).  Default: `prefetch`.
@@ -744,6 +753,7 @@ public:
     void begin_layer(int64_t layer, const int32_t* ids, int64_t k) override;
     /// CS-T: the GGUF in place assembles the missed experts on `fetch_threads_` threads.
     void prefetch(int64_t layer, const int64_t* experts, int64_t n) override;
+    void read_blobs(const int64_t* layers, const int64_t* experts, int64_t n, uint8_t* const* dst, uint8_t* ok) override;
     /// Upstream 149 zero-copy: `prefetch`, but an expert of the GGUF read in place whose pages the page cache holds
     /// whole is left in the mapping (`zc_roles`), not assembled into a stage buffer.  Linux only; nothing pending.
     int64_t prefetch_begin(int64_t layer, const int64_t* experts, int64_t n) override;
@@ -802,6 +812,22 @@ public:
         ~DecodeScope();
     };
     static bool in_decode();
+    /// XeMaya: marks a thread that reads experts ahead for a prompt (and the fetch threads it starts).  Its reads of
+    /// what the file cache does not hold go past the cache where the source reads unbuffered (`reads_unbuffered`).
+    struct PromptScope {
+        bool prev;
+        PromptScope();
+        ~PromptScope();
+        PromptScope(const PromptScope&) = delete;
+        PromptScope& operator=(const PromptScope&) = delete;
+    };
+    /// XeMaya: whether a prompt's reads of the GGUF in place go past the file cache (Linux, O_DIRECT; of the slices
+    /// the cache does not hold).  Opt-in, XEMAYA_EXPERT_UNBUFFERED=1: the prompt reads at the drive's speed, but the
+    /// cache is then cold for the experts the decode's CPU pool reads, and the first tokens after a short prompt
+    /// come slower (DeepSeek-V4.1-Flash IQ2_XXS, 123 GiB of experts on a host with 120 GiB, B70 + B65, 2026-11-11:
+    /// the prompt 27.5 -> 32.8 tok/s at 576 tokens, 46.2 -> 60.8 at 8,192; the 63 tokens after it 13.1 -> 9.9 tok/s
+    /// and 8.7 -> 9.1).
+    bool reads_unbuffered() const { return !dio_fds_.empty(); }
     bool gate_open() const { return !gate_on_ || gate_open_.load(std::memory_order_relaxed); }
     bool read_ahead_open() const override { return gate_open(); }
     bool gate_on() const { return gate_on_; }
@@ -871,6 +897,7 @@ private:
     bool io_quit_ = false;
     std::vector<char> stage_pf_;              ///< per stage buffer: read ahead, not yet used by a layer
     std::unique_ptr<std::atomic<uint8_t>[]> pf_mark_;   ///< experts.bin: per (layer, expert), read ahead, not yet asked for
+    std::vector<int> dio_fds_;                ///< XeMaya, per mapped file: an unbuffered descriptor (-1: none)
     std::vector<int> io_fds_;                 ///< per mapped file: a plain descriptor (POSIX_FADV_RANDOM) for the preads
     std::string bin_path_;                    ///< experts.bin's path (the preads open it again: their own read-ahead advice)
     mutable std::atomic<uint64_t> io_cached_{0}, io_uncached_{0}, io_pread_bytes_{0}, io_pread_us_{0}, io_pread_n_{0};

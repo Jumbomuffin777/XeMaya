@@ -112,7 +112,7 @@ PlainModel::~PlainModel() {
     for (auto& v : msegs_)
         for (auto* g : v) strata::gpu::graph_destroy(g);
     for (void* p : allocs_) strata::gpu::free(p);
-    for (void* p : {(void*) h_emb_, (void*) h_step_, (void*) h_pos_, (void*) h_out_, (void*) h_prob_, (void*) fill_tmp_,
+    for (void* p : {(void*) h_emb_, (void*) h_step_, (void*) h_pos_, (void*) h_out_, (void*) h_prob_, (void*) fill_tmp_, (void*) fill_batch_,
                     (void*) h_dids_,
                     (void*) hand_host_})
         strata::gpu::free(p);
@@ -3233,6 +3233,37 @@ bool PlainModel::fill_slot(int64_t layer, int32_t expert, std::string& err) {
     return true;
 }
 
+bool PlainModel::fill_slots(const std::vector<BatchFill>& batch, std::string& err) {
+    if (batch.empty()) return true;
+    const auto& lay = k::cpu::expert_layout();
+    const size_t n = batch.size();
+    std::vector<int64_t> layers(n), experts(n);
+    std::vector<uint8_t*> dst(n);
+    std::vector<uint8_t> ok(n, 0);
+    for (size_t i = 0; i < n; ++i) {
+        layers[i] = batch[i].layer;
+        experts[i] = batch[i].expert;
+        dst[i] = fill_batch_ + i * lay.max_blob;
+    }
+    src_->read_blobs(layers.data(), experts.data(), (int64_t) n, dst.data(), ok.data());
+    bool queued = false;
+    for (size_t i = 0; i < n; ++i) {
+        const int64_t bytes = (int64_t) lay.blob_bytes(batch[i].layer);
+        // one the source did not read this way: as fill_slot, through fill_tmp_
+        const bool done = ok[i] ? cache_.fill_slot_queued(batch[i].slot, dst[i], err, bytes)
+                                : src_->copy_blob(batch[i].layer, batch[i].expert, fill_tmp_) &&
+                                      cache_.fill_slot_blocking(batch[i].slot, fill_tmp_, err, bytes);
+        if (!done) {
+            if (err.empty()) err = "plain model: an expert could not be read for the VRAM tier";
+            return false;
+        }
+        queued = queued || ok[i];
+    }
+    if (queued && !cache_.sync_queued(err)) return false;   // the buffers are read again by the next batch
+    for (const BatchFill& b : batch) res_[(size_t) (b.layer * spec_.n_expert + b.expert)] = b.slot;
+    return true;
+}
+
 bool PlainModel::save_profile(const std::string& path, std::string& err) const {
     if (dense_) { err = "plain model: a dense model has no experts to profile"; return false; }
     const int64_t L = n_moe_, E = spec_.n_expert;
@@ -3302,6 +3333,12 @@ bool PlainModel::adapt(std::string& err, int64_t max_swaps, int64_t max_evict) {
         err = std::string("plain model: the adaptive tier's copy back: ") + strata::gpu::last_error();
         return false;
     }
+    // XeMaya: the round after a prompt: its fills from the files in batches (fill_slots)
+    std::vector<BatchFill> batch;
+    if (fill_batched_ && fill_batch_ == nullptr &&
+        !strata::gpu::alloc_host(&fill_batch_, (size_t) kFillBatch * (size_t) k::cpu::expert_layout().max_blob))
+        fill_batch_ = nullptr;   // no pinned room: one at a time
+    const bool batched = fill_batched_ && fill_batch_ != nullptr;
     for (const Swap& w : swaps) {
         if (w.out < 0) {
             if (free_[(size_t) w.layer].empty()) continue;
@@ -3323,11 +3360,21 @@ bool PlainModel::adapt(std::string& err, int64_t max_swaps, int64_t max_evict) {
             }
             f.pop_back();
             pending_.push_back({w.layer, w.in, slot});
+        } else if (batched) {   // the slot fill_slot would take, filled with its batch
+            auto& f = free_[(size_t) w.layer];
+            if (f.empty()) { err = "plain model: no free slot in the layer"; return false; }
+            batch.push_back({w.layer, w.in, f.back()});
+            f.pop_back();
+            if ((int) batch.size() == kFillBatch) {
+                if (!fill_slots(batch, err)) return false;
+                batch.clear();
+            }
         } else if (!fill_slot(w.layer, w.in, err)) {
             return false;
         }
         ++swaps_total_;
     }
+    if (!fill_slots(batch, err)) return false;
     pending_age_ = 0;
     if (!pending_.empty() && !strata::gpu::event_record(swap_ev_, swap_cs_)) {
         err = std::string("plain model: the adaptive tier's copies: ") + strata::gpu::last_error();

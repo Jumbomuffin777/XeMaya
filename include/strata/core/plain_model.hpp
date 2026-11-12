@@ -621,6 +621,9 @@ private:
     /// `mark(stage)` is the profile's (1 the grouping, 2 the experts).
     struct PromptRouted {
         int64_t cpu_n = 0, cpu_rows = 0, miss_n = 0;   ///< the CPU's experts and rows, the experts not in VRAM
+        /// STRATA_PROMPT_PROFILE: of the experts' time, the waits for the read-ahead, the copies into the pinned halves
+        /// and the waits for a half's last copies
+        double fetch_ms = 0, bounce_ms = 0, half_ms = 0;
     };
     bool prompt_routed(int64_t ml, int64_t T, bool cpu_share, int32_t* routes, const std::function<void(int)>& mark,
                        PromptRouted& st, std::string& err);
@@ -913,6 +916,14 @@ private:
     std::vector<int64_t> trunk_layers_;            ///< moe_local_ less the MTP layer
     std::vector<int64_t> prompt_routed_, prompt_seen_;   ///< the prompts' routings so far, for seed_usage
     uint8_t* fill_tmp_ = nullptr;                 ///< pinned staging for a slot fill
+    /// XeMaya: the round after a prompt (prompt_settle) fills its slots kFillBatch experts at a time: read from the
+    /// files side by side into fill_batch_ (pinned, kFillBatch blobs, allocated at the first such round), their
+    /// copies queued together.  One at a time (fill_slot) where the source reads none this way.
+    static constexpr int kFillBatch = 16;
+    uint8_t* fill_batch_ = nullptr;
+    bool fill_batched_ = false;
+    struct BatchFill { int64_t layer; int32_t expert, slot; };
+    bool fill_slots(const std::vector<BatchFill>& batch, std::string& err);
 
     // per-sequence device state
     std::vector<float*> gdn_state_, gdn_conv_;   ///< per GDN block

@@ -224,7 +224,8 @@ target_link_libraries(strata-plan PRIVATE strata_plan)
 
 # ---- host-only platform and n-gram reader ----------------------------------
 # These never touched the GPU runtime; they sat inside the CUDA build only because their consumers did.
-add_library(strata_platform STATIC src/platform/memory.cpp src/platform/direct_file.cpp src/platform/net.cpp)
+add_library(strata_platform STATIC src/platform/memory.cpp src/platform/direct_file.cpp src/platform/net.cpp
+            src/platform/unbuffered_read.cpp)
 target_include_directories(strata_platform PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 find_package(Threads REQUIRED)
 target_link_libraries(strata_platform PUBLIC strata_warnings Threads::Threads)
@@ -246,6 +247,10 @@ if(STRATA_BUILD_TESTS)
   add_executable(direct_file_async_test tests/platform/direct_file_async.cpp)
   target_link_libraries(direct_file_async_test PRIVATE strata_platform)
   add_test(NAME direct_file_async_test COMMAND direct_file_async_test)
+  # XeMaya: a range read past the file cache against the same bytes read through it (host only, no GPU)
+  add_executable(unbuffered_read_test tests/platform/unbuffered_read_test.cpp)
+  target_link_libraries(unbuffered_read_test PRIVATE strata_platform)
+  add_test(NAME unbuffered_read_test COMMAND unbuffered_read_test)
   # --aux-cpus: the CPU-set derivation (pure) and the placement of live threads; header-only, no GPU
   # XeMaya: the segment link end to end over the loopback, a stand-in for the model's blocks (no GPU)
   add_executable(segment_link_test tests/hybrid/segment_link_test.cpp)

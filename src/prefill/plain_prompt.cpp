@@ -221,7 +221,17 @@ bool PlainModel::prompt_settle(std::string& err) {
                opt_.adapt_decay);
     int64_t n_free = 0;
     for (const auto& f : free_) n_free += (int64_t) f.size();
-    return (n_free == 0 && opt_.adapt_swaps <= 0) || adapt(err, std::max<int64_t>(n_free, opt_.adapt_swaps), opt_.adapt_swaps);
+    if (n_free == 0 && opt_.adapt_swaps <= 0) return true;
+    // XeMaya: this round's fills from the files a batch at a time (adapt): the prompt's threads are idle now
+    static const bool batch_env = [] {
+        const char* v = std::getenv("XEMAYA_TIER_FILL_BATCH");
+        return v == nullptr || v[0] != '0';
+    }();
+    fill_batched_ = batch_env;
+    const FileExpertSource::PromptScope prompt_reads;   // past the file cache where the source reads so
+    const bool ok = adapt(err, std::max<int64_t>(n_free, opt_.adapt_swaps), opt_.adapt_swaps);
+    fill_batched_ = false;
+    return ok;
 }
 
 bool PlainModel::prompt_cpu_experts(int64_t ml, const std::vector<int32_t>& experts, const std::vector<int32_t>& count,
@@ -593,44 +603,84 @@ bool PlainModel::prompt_routed(int64_t ml, int64_t T, bool cpu_share, int32_t* r
     // (each expert asked: with a RAM copy of part of the layer the first expert says nothing of the others - the
     // layer's file reads went one by one whenever its lowest routed expert was in RAM)
     std::vector<std::vector<int64_t>> ahead;
+    // XeMaya: where the blobs go through the pinned halves (bounce, below), the read-ahead threads read each from the
+    // files straight into its place there (ExpertSource::read_blobs) instead of into a buffer of the source's that
+    // this thread then copies: that copy, one thread's beside the readers, was most of a prompt's time when no
+    // expert was in VRAM yet (DeepSeek-V4.1-Flash IQ2_XXS, 576 tokens on the B70 + B65, 2026-11-11: 20.0 s of 28.1).
+    // ahead_at: each read-ahead expert's place among its group's missed ones; ahead_ok: 1 once its blob is in the half.
+    // XEMAYA_PROMPT_PINNED_READS=0 keeps the copy.
+    static const bool pinned_env = [] {
+        const char* v = std::getenv("XEMAYA_PROMPT_PINNED_READS");
+        return v == nullptr || v[0] != '0';
+    }();
+    const bool bounce = transient && P.h_stage != nullptr && pg.overlap();
+    const bool pinned_reads = bounce && use_mmq && pinned_env;
+    std::vector<std::vector<int32_t>> ahead_at;
+    std::vector<std::vector<uint8_t>> ahead_ok;
     if (use_mmq) {
         int64_t missed = 0;   // the loop's groups count every missed expert: a group's read-ahead takes its file ones
         for (int32_t e : experts)
             if (res_[(size_t) (ml * E + e)] < 0) {
-                if (missed++ % PromptBufs::kGroup == 0) ahead.emplace_back();
-                if (src_->transient(ml, e)) ahead.back().push_back(e);
+                if (missed % PromptBufs::kGroup == 0) { ahead.emplace_back(); ahead_at.emplace_back(); }
+                if (src_->transient(ml, e)) {
+                    ahead.back().push_back(e);
+                    ahead_at.back().push_back((int32_t) (missed % PromptBufs::kGroup));
+                }
+                ++missed;
             }
+        ahead_ok.resize(ahead.size());
+        for (size_t i = 0; i < ahead.size(); ++i) ahead_ok[i].assign(ahead[i].size(), 0);
     }
     std::future<void> fetch;
+    bool fetch_bad = false;
     auto fetch_group = [&](size_t i) {
-        if (i < ahead.size() && !ahead[i].empty())
-            fetch = std::async(std::launch::async, [this, ml, &ahead, i] {
+        if (i >= ahead.size() || ahead[i].empty()) return;
+        const int h = (int) (i % 2);
+        // the half's last copies (two groups back, or a layer before) are done before it is written again
+        if (pinned_reads && pg.ready_live[h] && !strata::gpu::event_sync(pg.ready[h])) { fetch_bad = true; return; }
+        fetch = std::async(std::launch::async, [this, ml, &ahead, &ahead_at, &ahead_ok, &P, &lay, i, h, pinned_reads] {
+            const FileExpertSource::PromptScope prompt_reads;   // XeMaya: past the file cache where the source does
+            if (!pinned_reads) {
                 src_->prefetch(ml, ahead[i].data(), (int64_t) ahead[i].size());
-            });
+                return;
+            }
+            std::vector<uint8_t*> dst(ahead[i].size());
+            for (size_t q = 0; q < dst.size(); ++q)
+                dst[q] = P.h_stage + (size_t) (h * PromptBufs::kGroup + ahead_at[i][q]) * lay.max_blob;
+            const std::vector<int64_t> layers(dst.size(), ml);
+            src_->read_blobs(layers.data(), ahead[i].data(), (int64_t) dst.size(), dst.data(), ahead_ok[i].data());
+        });
     };
     fetch_group(0);
     // int8: as many experts a launch as the staging lets (those in VRAM read where they lie, kGroup from
     // RAM at most), gate/up, the SwiGLU, its rows to int8, down
     // a transient source's blobs through pinned host memory (h_stage's halves, as the device staging's) with the copies
     // beside the products, instead of each copied from pageable memory before the next is read
-    const bool bounce = transient && P.h_stage != nullptr && pg.overlap();
     for (size_t g0 = 0, gi = 0; use_mmq && g0 < experts.size(); ++gi) {
         if (transient && !bounce && !strata::gpu::stream_sync(cs)) {   // the staging's last readers are done
             err = std::string("plain prompt: ") + strata::gpu::last_error();
             return false;
         }
+        static const bool prof = std::getenv("STRATA_PROMPT_PROFILE") != nullptr;
+        using pclock = std::chrono::steady_clock;
+        auto since = [](pclock::time_point t) { return std::chrono::duration<double, std::milli>(pclock::now() - t).count(); };
+        pclock::time_point tp = prof ? pclock::now() : pclock::time_point();
         if (fetch.valid()) fetch.wait();   // this group's missed experts are assembled
+        if (prof) st.fetch_ms += since(tp);
         fetch_group(gi + 1);
+        if (fetch_bad) { err = std::string("plain prompt: ") + strata::gpu::last_error(); return false; }
         size_t g1 = g0;
         int staged = 0;
         int64_t mr = 0;
         // the half of the staging this group takes; its copies wait for the products two groups back
         const bool ovl = (!transient || bounce) && pg.overlap();
         const int h = (int) (gi % 2);
+        if (prof) tp = pclock::now();
         if (bounce && pg.ready_live[h] && !strata::gpu::event_sync(pg.ready[h])) {   // the half's last copies are done
             err = std::string("plain prompt: ") + strata::gpu::last_error();
             return false;
         }
+        if (prof) st.half_ms += since(tp);
         strata::gpu::Stream ccs = ovl ? pg.xs : cs;
         if (ovl && pg.used_live[h] && !strata::gpu::stream_wait_event(ccs, pg.used[h])) {
             err = std::string("plain prompt: ") + strata::gpu::last_error();
@@ -646,10 +696,17 @@ bool PlainModel::prompt_routed(int64_t ml, int64_t T, bool cpu_share, int32_t* r
                 if (staged == PromptBufs::kGroup) break;
                 const size_t at = (size_t) ((ovl ? h * PromptBufs::kGroup : 0) + staged++) * lay.max_blob;
                 uint8_t* dst = P.stage + at;
-                const uint8_t* hb = src_->blob(ml, e);
-                if (bounce && hb != nullptr) {
+                // read into its place in the half by the read-ahead (ahead_at), else the source's blob copied there
+                bool in_half = false;
+                if (pinned_reads && gi < ahead.size())
+                    for (size_t q = 0; q < ahead[gi].size() && !in_half; ++q)
+                        in_half = ahead_at[gi][q] == staged - 1 && ahead[gi][q] == e && ahead_ok[gi][q] != 0;
+                const uint8_t* hb = in_half ? P.h_stage + at : src_->blob(ml, e);
+                if (bounce && hb != nullptr && !in_half) {
+                    if (prof) tp = pclock::now();
                     std::memcpy(P.h_stage + at, hb, f.bytes);
                     hb = P.h_stage + at;
+                    if (prof) st.bounce_ms += since(tp);
                 }
                 const bool copied = hb != nullptr && (transient && !bounce ? strata::gpu::copy(dst, hb, f.bytes)
                                                                            : strata::gpu::copy_async(dst, hb, f.bytes, ccs));
@@ -850,10 +907,18 @@ bool PlainModel::prompt_close(bool settle, std::string& err) {
         if (!st->prompt_return(err2) && ok) { err = err2; ok = false; }
     }
     if (!ok || !settle) return ok;
+    const auto t0 = std::chrono::steady_clock::now();
+    int64_t before = 0, after = 0;
     for (PlainModel* st : chain()) {   // each tier's counts from the prompt, its free slots filled (prompt_one)
         const OnDevice on(st->dev_);
+        before += st->swaps_total_;
         if (!st->prompt_settle(err)) return false;
+        after += st->swaps_total_;
     }
+    if (std::getenv("STRATA_PROMPT_PROFILE") != nullptr)
+        std::fprintf(stderr, "strata plain: the VRAM tiers after the prompt: %lld experts in %.1f ms\n",
+                     (long long) (after - before),
+                     std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
     return true;
 }
 

@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later AND MIT
 // src/core/expert_source.cpp - the adapter.  See the header for the three clauses of the contract.
 #include "strata/core/expert_source.hpp"
+#include "strata/platform/unbuffered_read.hpp"
 #include "strata/core/remote_experts.hpp"
 
 #include "strata/kernels/cpu/expert_layout.hpp"
@@ -804,6 +805,9 @@ namespace { thread_local bool tl_decode = false; }
 FileExpertSource::DecodeScope::DecodeScope() : prev(tl_decode) { tl_decode = true; }
 FileExpertSource::DecodeScope::~DecodeScope() { tl_decode = prev; }
 bool FileExpertSource::in_decode() { return tl_decode; }
+namespace { thread_local bool tl_prompt = false; }
+FileExpertSource::PromptScope::PromptScope() : prev(tl_prompt) { tl_prompt = true; }
+FileExpertSource::PromptScope::~PromptScope() { tl_prompt = prev; }
 
 // Once a decode window: the share of the window's demand bytes the page cache held (an EWMA, reported only).
 void FileExpertSource::gate_tick() {
@@ -1106,6 +1110,8 @@ void FileExpertSource::close() {
     role_bytes_.clear();
     role_file_.clear();
     paths_.clear();
+    for (int f : dio_fds_) strata::platform::unbuffered_close(f);
+    dio_fds_.clear();
     direct_.clear();
     {
         std::lock_guard<std::mutex> lk(stage_mu_);
@@ -1223,6 +1229,20 @@ bool FileExpertSource::open_gguf(std::string& err) {
         }
     }
     base_ = maps_.front().base;       // "opened"; mapped_blob answers nullptr in this mode
+    {   // XeMaya: unbuffered descriptors for the prompt's reads (reads_unbuffered), every file or none
+        const char* v = std::getenv("XEMAYA_EXPERT_UNBUFFERED");
+        if (v != nullptr && v[0] != '\0' && v[0] != '0') {
+            for (const std::string& path : paths_) dio_fds_.push_back(strata::platform::unbuffered_open(path));
+            if (std::find(dio_fds_.begin(), dio_fds_.end(), -1) != dio_fds_.end()) {
+                for (int f : dio_fds_) strata::platform::unbuffered_close(f);
+                dio_fds_.clear();
+            } else {
+                std::fprintf(stderr, "FileExpertSource: a prompt's experts are read from the files past the file cache "
+                                     "(XEMAYA_EXPERT_UNBUFFERED; it has room for %.0f%% of their %.1f GiB)\n",
+                             100.0 * cache_room_ratio(), (double) expert_bytes() / 1073741824.0);
+            }
+        }
+    }
     warm_stamp_.reset(new std::atomic<uint32_t>[(size_t) (n_layers_ * n_expert_)]());
     for (uint64_t b : layer_blob_bytes_) stage_blob_ = std::max(stage_blob_, b);
     return true;
@@ -1262,6 +1282,17 @@ bool FileExpertSource::copy_from_files(int64_t layer, int64_t expert, uint8_t* d
             // mapping's descriptor would read ahead past it (and that read-ahead advice is the mapping's as well)
             const Map& m = maps_[(size_t) role_file_[i]];
             const int fd = (size_t) role_file_[i] < io_fds_.size() ? io_fds_[(size_t) role_file_[i]] : m.fd;
+#if defined(__linux__)
+            // XeMaya: a prompt's read of a slice the file cache does not hold, past the cache (one request, queued
+            // whole, instead of a read-ahead window at a time; reads_unbuffered says when)
+            if (tl_prompt && (size_t) role_file_[i] < dio_fds_.size() && dio_fds_[(size_t) role_file_[i]] >= 0 &&
+                resident_sampled(src, per) < per &&
+                strata::platform::unbuffered_read(dio_fds_[(size_t) role_file_[i]], dst + at, per,
+                                                  (uint64_t) (src - m.base))) {
+                at += per;
+                continue;
+            }
+#endif
             if (fd >= 0) {
                 uint64_t done = 0;
                 while (done < per) {
@@ -1429,6 +1460,35 @@ void FileExpertSource::prefetch(int64_t layer, const int64_t* experts, int64_t n
     }
 }
 
+void FileExpertSource::read_blobs(const int64_t* layers, const int64_t* experts, int64_t n, uint8_t* const* dst,
+                                  uint8_t* ok) {
+    for (int64_t i = 0; i < n; ++i) ok[i] = 0;
+    if (n <= 0) return;
+    // as fill_many's mapped reads: several threads keep the drive's queue full, each blob straight into its buffer
+    std::atomic<int64_t> next{0};
+    const bool dec = tl_decode, prm = tl_prompt;
+    auto work = [&] {
+        tl_decode = dec;
+        tl_prompt = prm;
+        for (int64_t i; (i = next.fetch_add(1)) < n;) {
+            const int64_t l = layers[i], e = experts[i];
+            if (l < 0 || l >= n_layers_ || e < 0 || e >= n_expert_ || dst[i] == nullptr || !transient(l, e)) continue;
+            const auto t0 = std::chrono::steady_clock::now();
+            if (!copy_from_files(l, e, dst[i])) continue;
+            file_us_.fetch_add((uint64_t) std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count(),
+                               std::memory_order_relaxed);
+            file_read_bytes_.fetch_add(layer_blob_bytes_[(size_t) l], std::memory_order_relaxed);
+            file_blob_bytes_.fetch_add(layer_blob_bytes_[(size_t) l], std::memory_order_relaxed);
+            ok[i] = 1;
+        }
+    };
+    const int64_t nt = std::min<int64_t>(n, fetch_threads_);
+    std::vector<std::thread> th;
+    for (int64_t t = 1; t < nt; ++t) th.emplace_back(work);
+    work();
+    for (auto& t : th) t.join();
+}
+
 void FileExpertSource::claim_todo(int64_t layer, const int64_t* experts, int64_t n, std::vector<Fill>& todo, bool zc) {
     // zero-copy (upstream 149, STRATA_COLD_OVERLAP=4): the GGUF in place, mapped and buffered - an expert the page
     // cache holds whole is computed from the mapping (its three tensors' rows), not assembled into a stage buffer
@@ -1571,8 +1631,10 @@ void FileExpertSource::fill_many(const std::vector<Fill>& todo) {
     // the page faults of a mapped read are one outstanding request each: several threads keep the SSD's queue full
     std::atomic<size_t> next{0};
     const bool dec = tl_decode;   // the decode gate counts the reads of the threads a decode layer starts
+    const bool prm = tl_prompt;
     auto work = [&] {
         tl_decode = dec;
+        tl_prompt = prm;
         for (size_t i; (i = next.fetch_add(1)) < todo.size();)
             (void) fill_stage(todo[i].v, todo[i].layer, todo[i].e, todo[i].dst);
     };
