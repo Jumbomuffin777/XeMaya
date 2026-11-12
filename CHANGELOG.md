@@ -4,6 +4,39 @@ SPDX-License-Identifier: LGPL-3.0-or-later
 -->
 # Changelog
 
+## 0.1.0-beta.1 — 2026-11-12
+
+The first beta, still **Linux and Intel Arc GPUs**. Since the alphas the three model families have each been run
+against a reference or a recorded benchmark again after the changes below; what remains unchecked is in the release
+notes (`xemaya/RELEASE-0.1.0-beta.1.md`).
+
+### Faster
+
+- **DeepSeek-V4.1-Flash, a model larger than the VRAM (the regular 384-expert file on B70 + B65):** prefill
+  20.0 -> 36.3 tok/s at 576 tokens, 36.5 -> 71.6 at 2,048 and 35.2 -> 91.8 at 8,192; the tokens after the prompt
+  12.8 -> 14.7, 11.3 -> 16.2 and 8.4 -> 15.9 tok/s. The generated tokens are the same.
+  - An expert the VRAM does not hold is read from the files straight into pinned memory
+    (`XEMAYA_PROMPT_PINNED_READS=0` turns it off).
+  - The VRAM tier's fill after a prompt reads 16 experts side by side (`XEMAYA_TIER_FILL_BATCH=0`).
+  - The experts a prompt's chunk uploads stay in the tier's free slots, so the next chunks do not read them again
+    (`XEMAYA_PROMPT_KEEP=0`). GLM-5.3-Flash prompts take the same path.
+- **Qwen3.8-Flash-Next decode with drafts (B70 + B65, 26.8K prompt):** 77.3 -> 79.4 tok/s on code, 58.0 -> 59.9 on
+  prose: the draft layer's attention on the matrix engines (`XEMAYA_MTP_ATTN=ref` turns it off) and the draft head's
+  2-bit rows in bit planes (`XEMAYA_DRAFT_HEAD=ref`).
+
+### Added
+
+- `XEMAYA_EXPERT_UNBUFFERED=1` (opt-in, Linux): a prompt's experts are read past the file cache. Faster prompts for a
+  model larger than the RAM, slower first tokens after a short prompt; the numbers are in
+  `xemaya/benchmarks/2026-11-11-ds41-flash-prefill/`.
+- `STRATA_PROMPT_PROFILE=1` and `STRATA_MTP_PROFILE=1` say more about where a prompt's and a draft step's time goes.
+
+### Known change
+
+- GLM-5.3-Flash Maya-S v2 agrees with its chat-agent reference at 125 of 128 forced tokens (126 before; the same
+  median and maximum difference): the VRAM tier holds other experts after the prompt. `XEMAYA_PROMPT_KEEP=0` gives
+  the earlier tier.
+
 ## 0.1.0-alpha.2 — 2026-11-11
 
 ### Fixed

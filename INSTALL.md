@@ -4,7 +4,7 @@ SPDX-License-Identifier: LGPL-3.0-or-later
 -->
 # Installing XeMaya (Linux, Intel Arc)
 
-This is the guide to the release folder `xemaya-<version>-linux-x86_64.tar.xz`. It is an **alpha**: read
+This is the guide to the release folder `xemaya-<version>-linux-x86_64.tar.xz`. It is a **beta**: read
 [Known limitations](#known-limitations) before pointing it at a GPU that other work depends on.
 
 ## What you need

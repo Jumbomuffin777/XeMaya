@@ -8,7 +8,8 @@ SPDX-License-Identifier: LGPL-3.0-or-later AND MIT
 
 **Native inference for Intel Arc. Built on XeStrata. Targeting Project Maya's models.**
 
-[![Status: alpha](https://img.shields.io/badge/status-alpha-orange)](xemaya/STATUS.md)
+[![Release: 0.1.0-beta.1](https://img.shields.io/badge/release-0.1.0--beta.1-brightgreen)](https://github.com/Jumbomuffin777/XeMaya/releases/latest)
+[![Status: beta](https://img.shields.io/badge/status-beta-green)](xemaya/STATUS.md)
 [![Backend: SYCL / Level Zero](https://img.shields.io/badge/backend-SYCL%20%2F%20Level%20Zero-blue)](docs/XE.md)
 [![Licence: LGPL v3+](https://img.shields.io/badge/licence-LGPL--3.0--or--later-blue)](COPYING.LESSER)
 [![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-Jumbomuffin777-FFDD00?logo=buymeacoffee&logoColor=000)](https://buymeacoffee.com/Jumbomuffin777)
@@ -21,10 +22,10 @@ DeepSeek-V4.1-Flash. It runs native SYCL / Level Zero kernels,
 including Intel XMX paths, with multi-GPU layer splitting and VRAM / RAM / SSD expert tiers.
 The engine is built on XeStrata, rather than a llama.cpp server wrapper or a CUDA compatibility layer.
 
-> **Alpha (0.1.0-alpha.2, 2026-11-11): Linux, Intel Arc GPUs.** Reference agreement is limited to the
+> **Beta (0.1.0-beta.1, 2026-11-12): Linux, Intel Arc GPUs.** Reference agreement is limited to the
 > models, prompts and hardware recorded below; it does not establish production readiness. Each release
 > build passes its host tests, CPU-device kernel parity, a clean install and a DeepSeek-V4.1 reference
-> check on three Arc cards before it is published (its release notes have the result); the other GPU
+> check on Arc cards before it is published (its release notes have the result); the other GPU
 > results below come from development builds of earlier commits. Read the [known limitations](INSTALL.md#known-limitations).
 
 ## Install
@@ -84,6 +85,8 @@ See [STATUS.md](xemaya/STATUS.md) for dates, settings, mismatches, incidents and
 | DeepSeek-V4.1-Flash Coder, three GPUs, direct expert tiers + XMX (window 6) | 207–209 tok/s at 576 tokens; 225 at 2,876 | 19.5–21.7 tok/s | 16/16 forced tokens on each of the 24- and 576-token references. |
 | DeepSeek-V4.1-Flash **regular (384 experts, not Coder)** IQ2_XXS, **B70 + B65**, published `0.1.0-alpha.1` build, 576-token prompt, 1,024-token decode | 11.4 tok/s | **14.56 tok/s** | Speed only, no reference comparison. 93.7% of routed experts in VRAM; misses run in the CPU pool. |
 | Same file and build, **B70 + B65 + B60** (`XEMAYA_SLOW_LINK_GPUS=1`) | 11.2 tok/s | **11.58 tok/s** | Speed only. Slower than two GPUs: the B60 lifts the hit rate only to 94.2% and its blocks add ~17.6 ms a token ([why](xemaya/benchmarks/2026-11-10-ds41-flash-384/README.md#why-two-gpus-are-faster-than-three-here)). |
+| DeepSeek-V4.1-Flash **regular (384 experts)** IQ2_XXS, **B70 + B65**, development build of 2026-11-12, shards on a PCIe Gen 5 SSD ([benchmark](xemaya/benchmarks/2026-11-11-ds41-flash-prefill/README.md)) | **36.3 tok/s** at 576 tokens, **71.6** at 2,048, **91.8** at 8,192 | 14.7–16.2 tok/s (the 63 tokens after the prompt) | 16/16 forced tokens on the 576-token reference. With the `0.1.0-alpha.2` code on the same drive: 20.0 / 36.5 / 35.2 tok/s prefill. |
+| Qwen3.8-Flash-Next, B70 + B65, 26.8K prompt, development build of 2026-11-12 ([benchmark](xemaya/benchmarks/2026-11-11-qwen-ab/README.md)) | 1,864–1,940 tok/s | **79.2–79.4 / 59.9 tok/s** (code / prose) | Speed only. Strata v0.2.12 in the same comparison: 78.7 / 59.2 decode. |
 | Qwen3.8-Flash-Next, B70 + B65, 26.8K prompt (window 4) | 1,842–1,884 tok/s; 1,989–1,996 with `STRATA_PREFILL_MMQ=0` | 76.6 / 57.1 tok/s (code / prose) | Behind Strata v0.2.12's 2,211 tok/s prefill and 78.3 / 59.2 decode in that comparison. |
 
 GLM's earlier llama.cpp SYCL baselines were 68.3 / 13.6 tok/s (stock) and 108.9 / 14.0
