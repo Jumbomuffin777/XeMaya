@@ -11,7 +11,24 @@
 Updated 2026-11-10 (the hybrid segment, checked on the CPU device; then the handoff of 12:30 UTC: MiniMax-M3.1-Flash on the three Arc cards).
 https://github.com/Jumbomuffin777/XeMaya. Every item below was run on the development host unless marked otherwise.
 
-## 2026-11-12: DeepSeek-V4.1-Flash prefill, the experts kept in VRAM during the prompt (read this first)
+## 2026-11-12: 0.1.0-beta.1 is published (read this first)
+
+The tag `xemaya-0.1.0-beta.1` (commit `4f0374c19`), GitHub's latest release, not a pre-release: the owner asked for
+the next release and left the step out of alpha to the session; a beta, not a stable version, because of what the
+release notes list as unchecked (`xemaya/RELEASE-0.1.0-beta.1.md`).
+
+- **Checked:** the release build's 16 tests; a clean install in an Ubuntu 24.04 container (checksums, `setup`, the
+  CPU-device parity tests, the server against its mock engine); the published build on B70 + B65 through
+  `gpu_job.sh`, no kernel message: DeepSeek-V4.1-Flash regular 16 of 16 on its 576-token reference (median 0.012,
+  max 0.097; prompt 34.1 tok/s), the Coder file 16 of 16 (0.010, 0.155; 56.1 tok/s), GLM-5.3 Maya-S v2 125 of 128 on
+  chat-agent (0.012, 0.395); the public downloads' checksums.
+- **Unverified:** Qwen3.8 with the release build (its benchmark ran on the development build of the same code); the
+  B60 and three-GPU configurations with this release; Ubuntu 26.04 and Fedora 44 installs; the free and
+  contrib-llvm modes with intel/llvm; Windows.
+- The release's files are in `<work>/release-tools/pub-beta1/`, its installed copy in `<work>/release-beta1/`, the
+  GPU check's logs in `<work>/logs/release-beta1/`.
+
+## 2026-11-12: DeepSeek-V4.1-Flash prefill, the experts kept in VRAM during the prompt
 
 [The record](benchmarks/2026-11-11-ds41-flash-prefill/README.md), its last section. While a layer's tier has free
 slots, the missed experts a chunk routes to most go into those slots and stay (`prompt_routed`,
